@@ -72,7 +72,8 @@ class LegoDataLoader:
         )
         if invalid_inventories.any():
             self.logger.error(
-                f"Invalid inventory_ids found: {steps_df[invalid_inventories]['inventory_id'].unique()}"
+                f"Invalid inventory_ids found: {steps_df[invalid_inventories]\
+                                                ['inventory_id'].unique()}"
             )
             return False
 
@@ -81,7 +82,8 @@ class LegoDataLoader:
         )
         if invalid_elements.any():
             self.logger.error(
-                f"Invalid element_ids found: {elements_df[invalid_elements]['element_id'].unique()}"
+                f"Invalid element_ids found: {elements_df[invalid_elements]\
+                                              ['element_id'].unique()}"
             )
             return False
 
@@ -90,14 +92,14 @@ class LegoDataLoader:
     def load_data(self, steps_csv: str, elements_csv: str):
         """Load data from CSV files into the database."""
 
-        steps_df = pd.read_csv(steps_csv)
-        elements_df = pd.read_csv(elements_csv)
-
-        if not self.validate_data(steps_df, elements_df):
-            self.logger.error("Data validation failed")
-            return
-
         try:
+            steps_df = pd.read_csv(steps_csv)
+            elements_df = pd.read_csv(elements_csv)
+
+            if not self.validate_data(steps_df, elements_df):
+                self.logger.error("Data validation failed")
+                return
+
             with self.engine.begin() as conn:
                 steps_df.to_sql(
                     "set_steps", conn, if_exists="append", index=False
@@ -107,7 +109,8 @@ class LegoDataLoader:
                 )
 
             self.logger.info(
-                f"Successfully loaded {len(steps_df)} steps and {len(elements_df)} elements"
+                f"Successfully loaded {len(steps_df)} steps and \
+                    {len(elements_df)} elements"
             )
 
         except Exception as e:
