@@ -37,4 +37,4 @@ BrickMapper processes official LEGO instruction manuals to:
 [Setup and usage instructions to be added]
 
 ## License
-This project is licensed under the terms of the GPL V3.0 license.
+This project is licensed under the terms of the [GPL V3.0 license](https://github.com/idanyd/BrickMapper?tab=GPL-3.0-1-ov-file).
