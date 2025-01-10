@@ -1,8 +1,6 @@
 import pandas as pd
 from sqlalchemy import create_engine, text
-from typing import Dict
 import logging
-from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
