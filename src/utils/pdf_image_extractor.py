@@ -11,14 +11,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Parameters
-DPI = 200 # Adjust as needed
-INFILE = 'manuals_to_sets.csv'
+DPI = 200  # Adjust as needed
+INFILE = "manuals_to_sets.csv"
 
-def extract_pages_as_images(pdf_path: Path,
-                            images_dir: Path,
-                            set_num: str,
-                            booklet_num: str,
-                            dpi: int = 300) -> list[Path]:
+
+def extract_pages_as_images(
+    pdf_path: Path,
+    images_dir: Path,
+    set_num: str,
+    booklet_num: str,
+    dpi: int = 300,
+) -> list[Path]:
     """
     Extract each page of a PDF as a PNG image.
 
@@ -31,8 +34,7 @@ def extract_pages_as_images(pdf_path: Path,
         List of paths to extracted image files
     """
     # Create output directory if it doesn't exist
-    output_dir = images_dir / set_num / booklet_num
-    output_dir.mkdir(parents=True, exist_ok=True)
+    images_dir.mkdir(parents=True, exist_ok=True)
 
     # Calculate zoom factor based on DPI (default PDF DPI is 72)
     zoom = dpi / 72
@@ -48,15 +50,17 @@ def extract_pages_as_images(pdf_path: Path,
         # Iterate through pages
         for page_num, page in enumerate(pdf_document):
             # Create matrix for better resolution
-            mat = fitz.Matrix(zoom, zoom)
+            # mat = fitz.Matrix(zoom, zoom)
 
             # Get page pixmap (image)
-            #pix = page.get_pixmap(matrix=mat)
+            # pix = page.get_pixmap(matrix=mat)
             pix = page.get_pixmap()
 
             # Generate output path
             page_num_str = str(page_num + 1).zfill(padding)
-            image_path = output_dir / f"{set_num}_{booklet_num}_{page_num_str}.jpg"
+            image_path = (
+                images_dir / f"{set_num}_{booklet_num}_{page_num_str}.jpg"
+            )
 
             # Save image
             pix.save(image_path)
@@ -68,6 +72,7 @@ def extract_pages_as_images(pdf_path: Path,
 
     logger.info(f"\nExtracted {len(created_files)} pages as images")
     return created_files
+
 
 def clean_output_directory(output_dir: Path):
     """
@@ -81,6 +86,7 @@ def clean_output_directory(output_dir: Path):
         logger.info(f"Cleaned directory: {output_dir}")
     output_dir.mkdir(parents=True)
 
+
 def main():
     # Get project root directory (assuming script is in src/utils)
     project_root = Path(__file__).parent.parent.parent
@@ -92,12 +98,20 @@ def main():
     extracted_images_dir.mkdir(parents=True, exist_ok=True)
 
     # Get the list of PDF files
-    with open(project_root / "data" / "training" / "manuals" / INFILE, mode='r') as infile:
+    with open(
+        project_root / "data" / "training" / "manuals" / INFILE, mode="r"
+    ) as infile:
         reader = csv.reader(infile)
         for row in reader:
             if not row:
                 continue
-            pdf_path = project_root / "data" / "training" / "manuals" / f"{row[0]}.pdf"
+            pdf_path = (
+                project_root
+                / "data"
+                / "training"
+                / "manuals"
+                / f"{row[0]}.pdf"
+            )
             set_num = row[1]
             booklet_num = row[2]
             # Extract images
@@ -105,9 +119,9 @@ def main():
                 created_files = extract_pages_as_images(
                     pdf_path=pdf_path,
                     images_dir=extracted_images_dir,
-                    set_num = set_num,
-                    booklet_num = booklet_num,
-                    dpi=DPI
+                    set_num=set_num,
+                    booklet_num=booklet_num,
+                    dpi=DPI,
                 )
 
                 # Print summary of created files
@@ -116,6 +130,7 @@ def main():
                     logger.info(file_path)
             else:
                 logger.error(f"PDF file not found: {pdf_path}")
+
 
 if __name__ == "__main__":
     main()
