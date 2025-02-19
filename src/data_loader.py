@@ -34,9 +34,11 @@ class LegoDataLoader:
                     step_number INT,
                     element_id VARCHAR(10),
                     quantity INT,
-                    PRIMARY KEY (inventory_id, booklet_number, step_number, element_id),
-                    FOREIGN KEY (inventory_id, booklet_number, step_number) 
-                        REFERENCES set_steps(inventory_id, booklet_number, step_number),
+                    PRIMARY KEY (inventory_id, booklet_number, step_number,
+                      element_id),
+                    FOREIGN KEY (inventory_id, booklet_number, step_number)
+                        REFERENCES set_steps(inventory_id, booklet_number,
+                          step_number),
                     FOREIGN KEY (element_id) REFERENCES elements(element_id)
                 );
             """,
@@ -70,7 +72,7 @@ class LegoDataLoader:
         )
         if invalid_inventories.any():
             self.logger.error(
-                f"Invalid inventory_ids found: {steps_df[invalid_inventories]\
+                f"Invalid inventory_ids found: {steps_df[invalid_inventories]
                                                 ['inventory_id'].unique()}"
             )
             return False
@@ -80,7 +82,7 @@ class LegoDataLoader:
         )
         if invalid_elements.any():
             self.logger.error(
-                f"Invalid element_ids found: {elements_df[invalid_elements]\
+                f"Invalid element_ids found: {elements_df[invalid_elements]
                                               ['element_id'].unique()}"
             )
             return False
