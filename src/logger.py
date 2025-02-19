@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 import sys
 
+
 def setup_logging(log_level=logging.INFO):
     """
     Set up logging configuration with daily rotating files.
@@ -11,21 +12,21 @@ def setup_logging(log_level=logging.INFO):
         log_level: Logging level (default: logging.INFO)
     """
     # Create logs directory if it doesn't exist
-    log_dir = Path('logs')
+    log_dir = Path("logs")
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Create formatter
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     # Get current date for log file name
-    current_date = datetime.now().strftime('%Y-%m-%d')
-    log_file = log_dir / f'brickmapper_{current_date}.log'
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    log_file = log_dir / f"brickmapper_{current_date}.log"
 
     # Create file handler
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(formatter)
     file_handler.setLevel(log_level)
 
