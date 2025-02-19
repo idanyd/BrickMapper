@@ -7,6 +7,7 @@ import yaml
 import matplotlib.pyplot as plt
 from PIL import Image
 from utils.numbers_ocr import extract_numbers
+from enum import Enum
 
 import logging
 
@@ -15,6 +16,12 @@ logger = logging.getLogger(__name__)
 ANNOTATIONS_PATH = Path("data/training/annotations/data.yaml")
 BEST_MODEL_PATH = Path("runs/train/exp/weights/best.pt")
 ANNOTATED_IMGS_DIR = Path("runs/validate/test_evaluation/annotated_images")
+
+
+# Annotation classes
+class BoxClass(Enum):
+    STEP_BOX = 0
+    STEP_NUMBER = 1
 
 
 class StepDetector:
@@ -43,6 +50,49 @@ class StepDetector:
             tags=tags,
         )
         return run
+
+    @staticmethod
+    def _find_matching_step_box(step_number_box, step_boxes):
+        """
+        find the index of the nearest box in step_boxes above step_number_box,
+        where "nearest" is defined by the Chebyshev distance between the bottom-left corner
+        of the upper box and the top-left corner of the current box.
+
+        Args:
+            step_number_box: Box containing the step number
+            step_boxes: List of boxes, where each box is [x1,y1,x2,y2]
+
+        Returns:
+            The index of the nearest box above step_number_box.
+            None if no box is above.
+        """
+
+        def chebyshev_distance(x1, y1, x2, y2):
+            """Calculate Chebyshev distance between two points"""
+            return max(abs(x1 - x2), abs(y1 - y2))
+
+        sb_x1, sb_y1, _, _ = step_number_box.xyxy[0].cpu().numpy()
+        min_distance = float("inf")
+        nearest_idx = None
+
+        for i, box in enumerate(step_boxes):
+
+            cb_x1, cb_y2 = box[0], box[3]  # (x1, y2)
+
+            # Check if candidate box is above current box
+            if box[3] <= sb_y1:  # y2 of candidate <= y1 of current
+                distance = chebyshev_distance(
+                    sb_x1,
+                    sb_y1,
+                    cb_x1,
+                    cb_y2,
+                )
+
+                if distance < min_distance:
+                    min_distance = distance
+                    nearest_idx = i
+
+        return nearest_idx
 
     def setup_yolo_training(
         self,
@@ -218,27 +268,43 @@ class StepDetector:
             )
 
             # Process predictions and collect steps
-            steps = []  # Store step info for visualization
+            steps = {}  # Store step info for visualization
 
             for result in pred_results:
-                for box in result.boxes:
-                    # Get box coordinates
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    conf = float(box.conf[0])
-                    cls = int(box.cls[0])
+                step_boxes = [
+                    box.xyxy[0].cpu().numpy()
+                    for box in result.boxes
+                    if box.cls == BoxClass.STEP_BOX.value
+                ]
 
-                    if cls == 1:
-                        # Extract number from step
-                        step_img = Image.open(image_path).crop(
-                            (x1, y1, x2, y2)
+                if len(step_boxes) == 0:
+                    logger.debug("No step boxes detected in the image")
+                    continue
+
+                step_numbers = [
+                    box
+                    for box in result.boxes
+                    if box.cls == BoxClass.STEP_NUMBER.value
+                ]
+
+                for step_number_box in step_numbers:
+                    # Extract number from step
+                    step_img = Image.open(image_path).crop(
+                        step_number_box.xyxy[0].cpu().numpy()
+                    )
+                    step_number = extract_numbers(step_img)
+                    step_box_index = self._find_matching_step_box(
+                        step_number_box, step_boxes
+                    )
+                    if step_box_index is None:
+                        logger.debug(
+                            f"No matching step box found for step number: {step_number}"
                         )
-                        step_number = extract_numbers(step_img)
+                    else:
                         logger.info(f"Detected step number: {step_number}")
 
-                    # Store box info for plotting
-                    steps.append(
-                        {"coords": (x1, y1, x2, y2), "conf": conf, "cls": cls}
-                    )
+                        # Store box info for plotting
+                        steps[step_number] = step_boxes[step_box_index]
 
             return steps
 

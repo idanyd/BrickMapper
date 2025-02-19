@@ -20,6 +20,7 @@ def preprocess_image(image):
 
 def display_images(orig_image, processed_image):
     # Display original and processed images side by side
+
     plt.figure(figsize=(10, 5))
 
     plt.subplot(1, 2, 1)
@@ -51,6 +52,7 @@ def extract_numbers(image, display_images=False):
         number = pytesseract.image_to_string(
             processed_image, config=custom_config
         ).strip()
-        return number
+        return int(number)
+
     except Exception as e:
         return f"Error: {str(e)}"

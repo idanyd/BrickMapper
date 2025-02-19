@@ -54,28 +54,22 @@ class PDFProcessor:
                     return None
 
                 # Process each detected step
-                for step_index, step_info in enumerate(steps):
-                    # No need to save step number boxes
-                    if step_info["cls"] == 1:
-                        continue
+                for step_number, step_info in steps.items():
+                    step_image = self._extract_step_image(img, step_info)
 
-                    step_image = self._extract_step_image(
-                        img, step_info["coords"]
-                    )
-
-                    if step_image and step_info:
+                    if step_image and step_info.size:
                         # Save step image
                         image_path = self._save_step_image(
                             step_image,
                             output_dir,
                             page_num,
-                            step_index,
+                            step_number,
                         )
 
                         results.append(
                             {
                                 "page_number": page_num,
-                                "step_number": step_index,
+                                "step_number": step_number,
                                 "image_path": str(image_path),
                             }
                         )
@@ -110,6 +104,7 @@ class PDFProcessor:
 
 
 def main():
+    # Test the PDFProcessor
     pdf_processor = PDFProcessor()
     pdf_path = Path("data/training/manuals/6497659.pdf")
     processed_booklets_path = Path("data/processed_booklets")
