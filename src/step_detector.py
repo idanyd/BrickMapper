@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 import matplotlib.pyplot as plt
 from PIL import Image
+from utils.numbers_ocr import extract_numbers
 
 import logging
 
@@ -225,6 +226,14 @@ class StepDetector:
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                     conf = float(box.conf[0])
                     cls = int(box.cls[0])
+
+                    if cls == 1:
+                        # Extract number from step
+                        step_img = Image.open(image_path).crop(
+                            (x1, y1, x2, y2)
+                        )
+                        step_number = extract_numbers(step_img)
+                        logger.info(f"Detected step number: {step_number}")
 
                     # Store box info for plotting
                     steps.append(
