@@ -278,13 +278,7 @@ def match_element_ids_to_images(
                 # Record the match
                 if element_id["number"] not in matches:
                     matches[element_id["number"]] = []
-                matches[element_id["number"]].append(img["xref"])
-
-                # Save the image
-                filename = f"{element_id['number']}_{len(matches[element_id["number"]])}_{img["xref"]}.{img['ext']}"
-
-                with open(output_dir / filename, "wb") as f:
-                    f.write(img["image_data"])
+                matches[element_id["number"]].append(img)
 
             # Check for element IDs without matching images
             if len(matches) < len(elements):
@@ -297,15 +291,13 @@ def match_element_ids_to_images(
     # if no other images were found for the piece
     for element_id, img_refs in potential_matches.items():
         if element_id not in matches:
-            matches[element_id["number"]] = [
-                img_ref["xref"] for img_ref in img_refs
-            ]
+            matches[element_id] = img_refs
         else:
             unmatched_images.extend(img_refs)
 
     # Add any remaining unprocessed images
     unmatched_images.extend(
-        [img for img in images if img["processed"] == False]
+        [image for image in images if not image["processed"]]
     )
 
     for image in unmatched_images:
@@ -313,13 +305,19 @@ def match_element_ids_to_images(
         with open(output_dir / filename, "wb") as f:
             f.write(image["image_data"])
 
+    for element_id, images in matches.items():
+        for i, image in enumerate(images):
+            # Save the image
+            filename = f"{element_id}_{i}_{image["xref"]}.{image['ext']}"
+            with open(output_dir / filename, "wb") as f:
+                f.write(image["image_data"])
     return matches, unmatched_images
 
 
 # Test the code
-pdf_path = Path("data/training/manuals/10300.pdf")
+pdf_path = Path("data/training/manuals/6127614.pdf")
 output_dir = Path("piece_renders")
-page_numbers = [298]  # Pages 68-69 in the PDF
+page_numbers = [67, 68]  # Pages 68-69 in the PDF
 
 print("Extracting element IDs...")
 element_ids, column_boundaries = extract_element_ids_and_positions(
