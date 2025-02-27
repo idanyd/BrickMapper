@@ -47,7 +47,7 @@ def is_complex_image(image_data):
 
     # Determine if this is a complex image based on our metrics
     is_complex = (
-        total_variance > 1000  # Has color variation
+        total_variance > 200   # Has color variation
         and unique_colors > 3  # Has a reasonable number of colors
     )
 
@@ -315,9 +315,9 @@ def match_element_ids_to_images(
 
 
 # Test the code
-pdf_path = Path("data/training/manuals/6127614.pdf")
+pdf_path = Path("data/training/manuals/10300.pdf")
 output_dir = Path("piece_renders")
-page_numbers = [67, 68]  # Pages 68-69 in the PDF
+page_numbers = [296]  # Pages 68-69 in the PDF
 
 print("Extracting element IDs...")
 element_ids, column_boundaries = extract_element_ids_and_positions(
@@ -332,8 +332,8 @@ images = extract_images_and_positions(
 print(f"Found {len(images)} images")
 
 
-# save_images(Path("temp_images"), images)
-# sys.exit()
+#save_images(Path("temp_images"), images)
+#sys.exit()
 
 print("\nMatching element IDs to images...")
 matches, unmatched = match_element_ids_to_images(
