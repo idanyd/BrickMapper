@@ -6,7 +6,10 @@ import numpy as np
 import io
 
 import sys
+import logging
+from logger import setup_logging
 
+logger = logging.getLogger(__name__)
 
 def save_images(output_dir, images):
     if not output_dir.exists():
@@ -183,10 +186,10 @@ def extract_images_and_positions(pdf_path, page_numbers, save_rejects=False):
                     }
                 )
             else:
-                print(f"Skipping image {xref} on page {page_num}")
+                logger.debug(f"Skipping image {xref} on page {page_num}")
                 if save_rejects:
                     save_images(
-                        Path("rejected_images"),
+                        Path("data/rejected_images"),
                         [
                             {
                                 "image_data": base_image["image"],
@@ -283,8 +286,8 @@ def match_element_ids_to_images(
             # Check for element IDs without matching images
             if len(matches) < len(elements):
                 for j in range(len(col_images), len(elements)):
-                    print(
-                        f"Warning: No images found for piece {elements[j]['number']}"
+                    logger.warning(
+                        f"No images found for piece {elements[j]['number']}"
                     )
 
     # Add potential matches to the matched images
@@ -313,47 +316,46 @@ def match_element_ids_to_images(
                 f.write(image["image_data"])
     return matches, unmatched_images
 
+def main():
+    setup_logging(logging.INFO)
+    # Test the code
+    pdf_path = Path("data/training/manuals/6555205.pdf")
+    output_dir = Path("data/piece_renders")
+    page_numbers = [n for n in range(252,258)]  # Pages 68-69 in the PDF
 
-# Test the code
-pdf_path = Path("data/training/manuals/10300.pdf")
-output_dir = Path("piece_renders")
-page_numbers = [296]  # Pages 68-69 in the PDF
+    logger.info("Extracting element IDs")
+    element_ids, column_boundaries = extract_element_ids_and_positions(
+        pdf_path, page_numbers
+    )
+    logger.info(f"Found {len(element_ids)} element IDs")
 
-print("Extracting element IDs...")
-element_ids, column_boundaries = extract_element_ids_and_positions(
-    pdf_path, page_numbers
-)
-print(f"Found {len(element_ids)} element IDs")
-
-print("\nExtracting images...")
-images = extract_images_and_positions(
-    pdf_path, page_numbers, save_rejects=True
-)
-print(f"Found {len(images)} images")
+    logger.info("Extracting images...")
+    images = extract_images_and_positions(
+        pdf_path, page_numbers, save_rejects=True
+    )
+    logger.info(f"Found {len(images)} images")
 
 
-#save_images(Path("temp_images"), images)
-#sys.exit()
+    #save_images(Path("temp_images"), images)
+    #sys.exit()
 
-print("\nMatching element IDs to images...")
-matches, unmatched = match_element_ids_to_images(
-    element_ids, column_boundaries, images, output_dir
-)
+    logger.info("Matching element IDs to images...")
+    matches, unmatched = match_element_ids_to_images(
+        element_ids, column_boundaries, images, output_dir
+    )
 
-print("\nResults:")
-print(f"pieces with matches: {len(matches)}")
-print(f"Unmatched images: {len(unmatched)}")
+    logger.info("Results:")
+    logger.info(f"pieces with matches: {len(matches)}")
+    logger.info(f"Unmatched images: {len(unmatched)}")
 
-# Print some example matches
-print("\nSample matches (first 5 pieces):")
-for element_id in list(matches.keys())[:5]:
-    print(f"piece {element_id} -> {len(matches[element_id])} images")
+    # Log unmatched images info
+    if unmatched:
+        unmatched.sort(key=lambda x: x["xref"])
+        logger.info("Unmatched images details:")
+        for img in unmatched:
+            logger.info(
+                f"xref: {img['xref']}, Page: {img['page']}, Position: {img['bbox']}, Size: {img['width']}x{img['height']}"
+            )
 
-# Print unmatched images info
-if unmatched:
-    unmatched.sort(key=lambda x: x["xref"])
-    print("\nUnmatched images details:")
-    for img in unmatched:
-        print(
-            f"xref: {img['xref']}, Page: {img['page']}, Position: {img['bbox']}, Size: {img['width']}x{img['height']}"
-        )
+if __name__=="__main__":
+    main()
