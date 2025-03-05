@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 
 
-def setup_logging(log_level=logging.INFO):
+def setup_logging(log_level=logging.INFO, log_to_console=True):
     """
     Set up logging configuration with daily rotating files.
 
@@ -30,11 +30,6 @@ def setup_logging(log_level=logging.INFO):
     file_handler.setFormatter(formatter)
     file_handler.setLevel(log_level)
 
-    # Create console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(formatter)
-    console_handler.setLevel(log_level)
-
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
@@ -44,6 +39,12 @@ def setup_logging(log_level=logging.INFO):
 
     # Add handlers
     root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
+
+    if log_to_console:
+        # Create console handler
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(formatter)
+        console_handler.setLevel(log_level)
+        root_logger.addHandler(console_handler)
 
     return logging.getLogger(__name__)

@@ -36,9 +36,6 @@ def extract_pages_as_images(
     # Create output directory if it doesn't exist
     images_dir.mkdir(parents=True, exist_ok=True)
 
-    # Calculate zoom factor based on DPI (default PDF DPI is 72)
-    zoom = dpi / 72
-
     created_files = []
 
     # Open PDF
@@ -85,6 +82,54 @@ def clean_output_directory(output_dir: Path):
         shutil.rmtree(output_dir)
         logger.info(f"Cleaned directory: {output_dir}")
     output_dir.mkdir(parents=True)
+
+
+def extract_pieces_from_step(pdf_path, page_num, step_info):
+    doc = fitz.open(pdf_path)
+    images = []
+
+    page = doc[page_num]
+
+    # Get all images on the page
+    for img in page.get_images(full=True):
+        xref = img[0]
+        base_image = doc.extract_image(xref)
+
+        if base_image["width"] < 10 or base_image["height"] < 10:
+            # Skip small images
+            continue
+
+        # Get the image rectangle (bbox) from the page
+        bbox = None
+        for rect in page.get_image_rects(xref):
+            # Just take the first occurrence's bbox
+            bbox = rect
+            break
+
+        # Only add images that are in the step bounding box
+        if (
+            bbox
+            and bbox[0] > step_info[0]
+            and bbox[1] > step_info[1]
+            and bbox[2] < step_info[2]
+            and bbox[3] < step_info[3]
+        ):
+            """
+            images.append(
+                {
+                    "image_data": base_image["image"],
+                    "ext": base_image["ext"],
+                    "bbox": bbox,
+                    "width": base_image["width"],
+                    "height": base_image["height"],
+                    "xref": xref,
+                }
+            )
+            """
+            images.append(base_image["image"])
+
+    doc.close()
+    return images
 
 
 def main():

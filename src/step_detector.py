@@ -264,7 +264,7 @@ class StepDetector:
         try:
             # Get predictions
             pred_results = self.model.predict(
-                image_path, conf=conf_threshold, save=False
+                image_path, conf=conf_threshold, save=False, verbose=False
             )
 
             # Process predictions and collect steps
@@ -484,7 +484,9 @@ def main(train=False, evaluate=False, test=False):
     Raises:
         FileNotFoundError: If data.yaml file is not found at specified path.
     """
+    current_dir = Path().resolve()
 
+    print(current_dir)
     # Verify data.yaml exists
     if not os.path.exists(ANNOTATIONS_PATH):
         raise FileNotFoundError(f"data.yaml not found at {ANNOTATIONS_PATH}")

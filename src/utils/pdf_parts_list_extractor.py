@@ -1,19 +1,18 @@
 import fitz
-import os
 from pathlib import Path
 from PIL import Image
 import numpy as np
 import io
 
-import sys
 import logging
-from logger import setup_logging
+from utils.logger import setup_logging
 
 logger = logging.getLogger(__name__)
 
+
 def save_images(output_dir, images):
-    if not output_dir.exists():
-        os.makedirs(output_dir)
+    # Create output directory if it doesn't exist
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     for img in images:
         filename = f"{img['xref']}.{img['ext']}"
@@ -50,7 +49,7 @@ def is_complex_image(image_data):
 
     # Determine if this is a complex image based on our metrics
     is_complex = (
-        total_variance > 200   # Has color variation
+        total_variance > 200  # Has color variation
         and unique_colors > 3  # Has a reasonable number of colors
     )
 
@@ -148,7 +147,7 @@ def extract_element_ids_and_positions(pdf_path, page_numbers):
     return element_ids, column_boundaries
 
 
-def extract_images_and_positions(pdf_path, page_numbers, save_rejects=False):
+def extract_images_and_positions(pdf_path, page_numbers, rejected_images_dir):
     doc = fitz.open(pdf_path)
     images = []
 
@@ -187,9 +186,9 @@ def extract_images_and_positions(pdf_path, page_numbers, save_rejects=False):
                 )
             else:
                 logger.debug(f"Skipping image {xref} on page {page_num}")
-                if save_rejects:
+                if rejected_images_dir:
                     save_images(
-                        Path("data/rejected_images"),
+                        rejected_images_dir,
                         [
                             {
                                 "image_data": base_image["image"],
@@ -213,9 +212,6 @@ def match_element_ids_to_images(
             return next(id for id in element_ids if id["bbox"][1] > y)
         except StopIteration:
             return None  # Return None if no item is higher than the threshold
-
-    if not output_dir.exists():
-        os.makedirs(output_dir)
 
     matches = {}
     potential_matches = {}
@@ -303,26 +299,33 @@ def match_element_ids_to_images(
         [image for image in images if not image["processed"]]
     )
 
-    for image in unmatched_images:
-        filename = f"unmatched_P{image['page']}_y{image['bbox'][1]}_xref{image['xref']}.{image['ext']}"
-        with open(output_dir / filename, "wb") as f:
-            f.write(image["image_data"])
+    if output_dir:
+        # Only save unmatched images if the output directory is provided
 
-    for element_id, images in matches.items():
-        for i, image in enumerate(images):
-            # Save the image
-            filename = f"{element_id}_{i}_{image["xref"]}.{image['ext']}"
+        # Create output directory if it doesn't exist
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        for image in unmatched_images:
+            filename = f"unmatched_P{image['page']}_y{image['bbox'][1]}_xref{image['xref']}.{image['ext']}"
             with open(output_dir / filename, "wb") as f:
                 f.write(image["image_data"])
+
+        for element_id, images in matches.items():
+            for i, image in enumerate(images):
+                # Save the image
+                filename = f"{element_id}_{i}_{image["xref"]}.{image['ext']}"
+                with open(output_dir / filename, "wb") as f:
+                    f.write(image["image_data"])
     return matches, unmatched_images
 
-def main():
-    setup_logging(logging.INFO)
-    # Test the code
-    pdf_path = Path("data/training/manuals/6555205.pdf")
-    output_dir = Path("data/piece_renders")
-    page_numbers = [n for n in range(252,258)]  # Pages 68-69 in the PDF
 
+def extract_parts_list_from_pdf(
+    pdf_path,
+    page_numbers,
+    set_pieces_dir=None,
+    all_extracted_images_dir=None,
+    rejected_images_dir=None,
+):
     logger.info("Extracting element IDs")
     element_ids, column_boundaries = extract_element_ids_and_positions(
         pdf_path, page_numbers
@@ -331,22 +334,45 @@ def main():
 
     logger.info("Extracting images...")
     images = extract_images_and_positions(
-        pdf_path, page_numbers, save_rejects=True
+        pdf_path, page_numbers, rejected_images_dir
     )
     logger.info(f"Found {len(images)} images")
 
+    if all_extracted_images_dir:
+        # Save all extracted images, matched and unmatched alike
+        logger.info(
+            f"Saving all extracted images to {all_extracted_images_dir}"
+        )
 
-    #save_images(Path("temp_images"), images)
-    #sys.exit()
+        save_images(all_extracted_images_dir, images)
 
     logger.info("Matching element IDs to images...")
-    matches, unmatched = match_element_ids_to_images(
-        element_ids, column_boundaries, images, output_dir
+    matched, unmatched = match_element_ids_to_images(
+        element_ids, column_boundaries, images, set_pieces_dir
     )
 
     logger.info("Results:")
-    logger.info(f"pieces with matches: {len(matches)}")
+    logger.info(f"pieces with matches: {len(matched)}")
     logger.info(f"Unmatched images: {len(unmatched)}")
+
+    return matched, unmatched
+
+
+def main():
+    setup_logging(logging.INFO)
+    # Test the code
+    manual = "6497660"
+    set_num = "31147"
+    booklet_num = "3"
+    pdf_path = Path(f"data/training/manuals/{manual}.pdf")
+    piece_renders_dir = Path(
+        f"data/processed_booklets/{set_num}_{booklet_num}/piece_renders"
+    )
+    page_numbers = [n for n in range(37, 39)]  # Pages 38-39 in the PDF
+
+    matched, unmatched = extract_parts_list_from_pdf(
+        pdf_path, page_numbers, piece_renders_dir
+    )
 
     # Log unmatched images info
     if unmatched:
@@ -357,5 +383,6 @@ def main():
                 f"xref: {img['xref']}, Page: {img['page']}, Position: {img['bbox']}, Size: {img['width']}x{img['height']}"
             )
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     main()
