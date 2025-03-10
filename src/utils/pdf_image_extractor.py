@@ -5,14 +5,12 @@ from pathlib import Path
 import shutil
 import logging
 import csv
+from PIL import Image
+import io
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Parameters
-DPI = 200  # Adjust as needed
-INFILE = "manuals_to_sets.csv"
 
 
 def extract_pages_as_images(
@@ -20,7 +18,6 @@ def extract_pages_as_images(
     images_dir: Path,
     set_num: str,
     booklet_num: str,
-    dpi: int = 300,
 ) -> list[Path]:
     """
     Extract each page of a PDF as a PNG image.
@@ -28,7 +25,6 @@ def extract_pages_as_images(
     Args:
         pdf_path: Path to the PDF file
         output_dir: Directory where images will be saved
-        dpi: Resolution for the extracted images (default: 300)
 
     Returns:
         List of paths to extracted image files
@@ -46,11 +42,8 @@ def extract_pages_as_images(
         padding = len(str(num_pages))
         # Iterate through pages
         for page_num, page in enumerate(pdf_document):
-            # Create matrix for better resolution
-            # mat = fitz.Matrix(zoom, zoom)
 
             # Get page pixmap (image)
-            # pix = page.get_pixmap(matrix=mat)
             pix = page.get_pixmap()
 
             # Generate output path
@@ -67,8 +60,43 @@ def extract_pages_as_images(
     finally:
         pdf_document.close()
 
-    logger.info(f"\nExtracted {len(created_files)} pages as images")
+    logger.info(f"Extracted {len(created_files)} pages as images")
     return created_files
+
+
+def extract_pages_as_images_generator(pdf_path: Path):
+    """
+    Extract each page of a PDF as a PNG image and yield them one by one.
+
+    Args:
+        pdf_path: Path to the PDF file
+        set_num: Set number for filename
+        booklet_num: Booklet number for filename
+
+    Yields:
+        Tuple of (page_number, image_data) for each page
+    """
+    # Open PDF
+    pdf_document = fitz.open(pdf_path)
+
+    try:
+        # Iterate through pages
+        for page_num, page in enumerate(pdf_document):
+            # Get page pixmap (image)
+            pix = page.get_pixmap()
+
+            # Convert to PIL Image
+            img_bytes = pix.tobytes("jpeg")
+            pil_image = Image.open(io.BytesIO(img_bytes))
+
+            # Yield the image data and metadata
+            yield {
+                "page_num": page_num + 1,
+                "image_data": pil_image,
+            }
+
+    finally:
+        pdf_document.close()
 
 
 def clean_output_directory(output_dir: Path):
@@ -114,18 +142,7 @@ def extract_pieces_from_step(pdf_path, page_num, step_info):
             and bbox[2] < step_info[2]
             and bbox[3] < step_info[3]
         ):
-            """
-            images.append(
-                {
-                    "image_data": base_image["image"],
-                    "ext": base_image["ext"],
-                    "bbox": bbox,
-                    "width": base_image["width"],
-                    "height": base_image["height"],
-                    "xref": xref,
-                }
-            )
-            """
+
             images.append(base_image["image"])
 
     doc.close()
@@ -133,6 +150,9 @@ def extract_pieces_from_step(pdf_path, page_num, step_info):
 
 
 def main():
+    # Parameters
+    INFILE = "manuals_to_sets.csv"
+
     # Get project root directory (assuming script is in src/utils)
     project_root = Path(__file__).parent.parent.parent
 

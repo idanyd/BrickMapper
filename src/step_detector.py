@@ -250,12 +250,12 @@ class StepDetector:
 
         logger.info(f"Saved annotated image to: {output_path}")
 
-    def detect_steps(self, image_path, conf_threshold=0.25):
+    def detect_steps(self, image, conf_threshold=0.25):
         """
         Detect steps in an image and return the bounding box coordinates.
 
         Args:
-            image_path (str): Path to the input image to annotate
+            image (PIL image): Input image to detect steps
             conf_threshold (float, optional): Confidence threshold for predictions. Defaults to 0.25
 
         Returns:
@@ -264,7 +264,7 @@ class StepDetector:
         try:
             # Get predictions
             pred_results = self.model.predict(
-                image_path, conf=conf_threshold, save=False, verbose=False
+                image, conf=conf_threshold, save=False, verbose=False
             )
 
             # Process predictions and collect steps
@@ -289,7 +289,7 @@ class StepDetector:
 
                 for step_number_box in step_numbers:
                     # Extract number from step
-                    step_img = Image.open(image_path).crop(
+                    step_img = image.crop(
                         step_number_box.xyxy[0].cpu().numpy()
                     )
                     step_number = extract_numbers(step_img)

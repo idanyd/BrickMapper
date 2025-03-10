@@ -2,271 +2,431 @@ from pathlib import Path
 import cv2
 from skimage.metrics import structural_similarity as ssim
 import re
-
-from openpyxl import Workbook
-from openpyxl.drawing.image import Image as XLImage
+import pandas as pd
 from io import BytesIO
 from PIL import Image
 import numpy as np
+from IPython.display import display, HTML
+import base64
+import logging
 
 
+class PieceMatcher:
+    """Class for matching LEGO pieces from instruction steps to set piece renders."""
 
-def create_comparison_excel(pieces_dir, renders_dir, results):
-    """
-    Create an Excel sheet showing matched pieces and their similarity scores
-    using data from the results dictionary
-    """
+    def __init__(self):
+        """Initialize the PieceMatcher class."""
+        # Store pieces and renders in memory
+        self.step_pieces = (
+            []
+        )  # Format: [{"img": img_array, "page": page_num, "step": step_num, "piece": piece_num, "path": path}]
+        self.set_pieces = (
+            {}
+        )  # Format: {element_id: [{"image_data": img_array, "path": path}]}
+        self.matched = {}  # Matching results
+        self.unmatched = {}  # Unmatched results
 
-    def resize_image_for_excel(img_array, max_size=(100, 100)):
-        """Resize image to fit in Excel cell"""
-        img_pil = Image.fromarray(img_array)
-        img_pil.thumbnail(max_size)
-        img_bio = BytesIO()
-        img_pil.save(img_bio, format="PNG")
-        return img_bio.getvalue()
+        self.logger = logging.getLogger(__name__)
 
-    # Create a new workbook
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Piece Matches"
+    def load_step_pieces_from_directory(self, pieces_dir):
+        """
+        Load all step piece images from the specified directory.
 
-    # Set column headers
-    ws["A1"] = "Element ID"
-    ws["B1"] = "Page"
-    ws["C1"] = "Step"
-    ws["D1"] = "Piece Image"
-    ws["E1"] = "Render Image"
-    ws["F1"] = "Similarity Score"
-    ws["G1"] = "Piece Filename"
-    ws["H1"] = "Render Filename"
+        Parameters:
+        -----------
+        pieces_dir : Path or str
+            Directory containing the step piece images
+        """
+        pieces_dir = Path(pieces_dir)
 
-    # Set column widths
-    ws.column_dimensions["A"].width = 15
-    ws.column_dimensions["B"].width = 10
-    ws.column_dimensions["C"].width = 10
-    ws.column_dimensions["D"].width = 20
-    ws.column_dimensions["E"].width = 20
-    ws.column_dimensions["F"].width = 15
-    ws.column_dimensions["G"].width = 40
-    ws.column_dimensions["H"].width = 40
+        # Pattern to extract page, step, and piece numbers from filenames
+        pattern = r"page_(\d+)_step_(\d+)_piece_(\d+)"
 
-    # Start from row 2
-    row = 2
+        for file_path in pieces_dir.glob("*.png") or pieces_dir.glob("*.jpg"):
+            match = re.search(pattern, file_path.name)
+            if match:
+                page_num = int(match.group(1))
+                step_num = int(match.group(2))
+                piece_num = int(match.group(3))
 
-    for element_id, pages in results.items():
-        # Find the corresponding render image
-        render_path = None
-        for file in renders_dir.glob(f"{element_id}_*.*"):
-            render_path = file
-            break
-
-        if render_path is None:
-            continue
-
-        render_img = cv2.imread(str(render_path))
-        render_img = cv2.cvtColor(render_img, cv2.COLOR_BGR2RGB)
-
-        for page_num, steps_data in pages.items():
-            for step_info in steps_data:
-                step_num = step_info["step"]
-                similarity = step_info["similarity"]
-                piece_num = step_info["piece"]
-
-                # Find corresponding piece image
-                piece_pattern = f"page_{page_num:03d}_step_{step_num:03d}_piece_{piece_num:03d}.*"
-                piece_path = None
-                for file in pieces_dir.glob(piece_pattern):
-                    piece_path = file
-                    break
-
-                if piece_path is None:
+                # Load the image
+                img = cv2.imread(str(file_path))
+                if img is None:
                     continue
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-                piece_img = cv2.imread(str(piece_path))
-                piece_img = cv2.cvtColor(piece_img, cv2.COLOR_BGR2RGB)
-
-                # Add text data
-                ws[f"A{row}"] = element_id
-                ws[f"B{row}"] = page_num
-                ws[f"C{row}"] = step_num
-                ws[f"F{row}"] = f"{similarity:.3f}"
-                ws[f"G{row}"] = piece_path.name
-                ws[f"H{row}"] = render_path.name
-
-                # Add images
-                try:
-                    # Add piece image
-                    piece_data = resize_image_for_excel(piece_img)
-                    piece_img_xl = XLImage(BytesIO(piece_data))
-                    ws.row_dimensions[row].height = 75
-                    ws.add_image(piece_img_xl, f"D{row}")
-
-                    # Add render image
-                    render_data = resize_image_for_excel(render_img)
-                    render_img_xl = XLImage(BytesIO(render_data))
-                    ws.add_image(render_img_xl, f"E{row}")
-
-                except Exception as e:
-                    print(f"Error adding images to row {row}: {e}")
-
-                row += 1
-
-    # Save the workbook
-    output_path = "piece_comparisons.xlsx"
-    wb.save(output_path)
-    print(f"Created comparison Excel file: {output_path}")
-
-
-def load_and_resize_image(image_bytes, target_size=(200, 200)):
-    """Load image and resize it to a standard size using Pillow"""
-    try:
-        # Open the image with Pillow
-        img = Image.open(BytesIO(image_bytes))
-
-        # Resize the image
-        img = img.resize(target_size, Image.Resampling.LANCZOS)
-
-        # Convert to RGB if it's not already
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-
-        # Convert to numpy array for compatibility with other functions
-        img_array = np.array(img)
-
-        return img_array
-    except Exception as e:
-        print(f"Error loading image: {e}")
-        return None
-
-
-def get_element_id(filename):
-    """Extract element ID from piece_renders filename"""
-    match = re.match(r"(\d+)_\d+_\d+\.(jp(e?)g|png)", filename)
-    if match:
-        return match.group(1)
-    return None
-
-
-def get_page_step_info(filename):
-    """Extract page and step numbers from pieces filename"""
-    match = re.match(
-        r"page_(\d+)_step_(\d+)_piece_(\d+)\.(jp(e?)g|png)", filename
-    )
-    if match:
-        return int(match.group(1)), int(match.group(2)), int(match.group(3))
-    return None, None
-
-
-def compare_images(img1, img2):
-    """Compare two images using SSIM"""
-    score, _ = ssim(img1, img2, channel_axis=2, full=True)
-    return score
-
-
-def match_pieces(step_pieces, set_pieces):
-    # Dictionary to store results
-    results = (
-        {}
-    )  # {element_id: {page_num: [{step_num1, similarity}, {step_num2, similarity}, ...]}}
-
-    # Resize each set piece image
-    set_pieces = {
-        element_id: [
-            load_and_resize_image(render_img["image_data"])
-            for render_img in render_imgs
-        ]
-        for element_id, render_imgs in set_pieces.items()
-        if render_imgs[0]["image_data"] is not None
-    }
-
-    # Process each piece image
-    for piece in step_pieces:
-        piece_image, page_num, step_num, piece_num = (
-            load_and_resize_image(piece["img"]),
-            piece["page"],
-            piece["step"],
-            piece["piece"],
-        )
-
-        # Compare with each render image
-        best_match = (None, -1)  # (element_id, similarity_score)
-        for element_id, render_imgs in set_pieces.items():
-            for render_img in render_imgs:
-                # Iterate over each image matched for this element ID
-                similarity = compare_images(piece_image, render_img)
-                if similarity > best_match[1]:
-                    best_match = (element_id, similarity)
-
-        # If good match found (threshold may need to be adjusted)
-        if best_match[1] > 0.6:
-            element_id = best_match[0]
-            if element_id not in results:
-                results[element_id] = {}
-            if page_num not in results[element_id]:
-                results[element_id][page_num] = []
-            if step_num not in results[element_id][page_num]:
-                results[element_id][page_num].append(
+                # Store the image and its metadata
+                self.step_pieces.append(
                     {
+                        "img": img,
+                        "page": page_num,
                         "step": step_num,
                         "piece": piece_num,
-                        "similarity": best_match[1],
+                        "path": file_path,
                     }
                 )
 
-    return results
+        self.logger.info(
+            f"Loaded {len(self.step_pieces)} step pieces from {pieces_dir}"
+        )
 
+    def load_set_pieces_from_directory(self, renders_dir):
+        """
+        Load all set piece render images from the specified directory.
 
-def get_piece_data(piece_file):
-    """Load piece image and extract page, step, and piece numbers"""
-    piece_img = cv2.imread(str(piece_file))
-    if piece_img is None:
+        Parameters:
+        -----------
+        renders_dir : Path or str
+            Directory containing the set piece render images
+        """
+        renders_dir = Path(renders_dir)
+
+        for file_path in renders_dir.glob("*.png") or renders_dir.glob(
+            "*.jpg"
+        ):
+            # Extract element ID from filename
+            element_id = self._get_element_id(file_path.name)
+            if element_id:
+                # Load the image
+                img = cv2.imread(str(file_path))
+                if img is None:
+                    continue
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+                # Store the image and its path
+                if element_id not in self.set_pieces:
+                    self.set_pieces[element_id] = []
+
+                self.set_pieces[element_id].append(
+                    {"image_data": img, "path": file_path}
+                )
+
+        self.logger.info(
+            f"Loaded {len(self.set_pieces)} set pieces from {renders_dir}"
+        )
+
+    def add_set_pieces(self, set_pieces):
+        """
+        Add set piece images to the matcher.
+
+        Parameters:
+        -----------
+        set_pieces : dict
+            Dictionary with element IDs as keys and lists of image data as values
+        """
+        for element_id, images in set_pieces.items():
+            if element_id not in self.set_pieces:
+                self.set_pieces[element_id] = []
+            self.set_pieces[element_id].extend(images)
+
+    def add_step_pieces(self, step_pieces):
+        """
+        Add step piece images to the matcher.
+
+        Parameters:
+        -----------
+        step_pieces : list
+            List of dictionaries with image data and metadata
+        """
+        self.step_pieces.extend(step_pieces)
+
+    def _get_element_id(self, filename):
+        """
+        Extract element ID from piece_renders filename.
+
+        Parameters:
+        -----------
+        filename : str
+            Filename to extract element ID from
+
+        Returns:
+        --------
+        str or None
+            Element ID if found, None otherwise
+        """
+        match = re.match(r"(\d+)_\d*\.(jp(e?)g|png)", filename)
+        if match:
+            return match.group(1)
         return None
-    page_num, step_num, piece_num = get_page_step_info(piece_file.name)
-    if not (page_num and step_num):
-        return None
-    return {
-        "img": piece_img,
-        "page": page_num,
-        "step": step_num,
-        "piece": piece_num,
-    }
 
+    def _resize_image(self, img_bytes, target_size=(200, 200)):
+        """
+        Resize an image to a standard size.
 
-def match_pieces_from_files(
-    step_piece_renders_dir: Path, all_set_piece_renders_dir: Path
-):
-    # Load all set pieces images
-    set_pieces = {}
-    for render_file in all_set_piece_renders_dir.glob("*"):
-        element_id = get_element_id(render_file.name)
-        if element_id:
-            img = cv2.imread(str(render_file))
-            if img is not None:
-                set_pieces[element_id] = [{"image_data": img}]
+        Parameters:
+        -----------
+        img_bytes : bytes
+            Image data in bytes format
+        target_size : tuple, optional
+            Target size (width, height)
 
-    # load all step pieces images
-    step_pieces = [
-        get_piece_data(piece_file)
-        for piece_file in step_piece_renders_dir.glob("*")
-    ]
+        Returns:
+        --------
+        numpy.ndarray
+            Resized image
+        """
+        try:
+            # Convert to PIL Image
+            image_pil = Image.open(BytesIO(img_bytes))
 
-    return match_pieces(step_pieces, set_pieces)
+            # Resize the image
+            resized_image = image_pil.resize(
+                target_size, Image.Resampling.LANCZOS
+            )
+
+            # Convert to RGB if it's not already
+            if resized_image.mode != "RGB":
+                resized_image = resized_image.convert("RGB")
+
+            # Convert back to bytes array
+            # img_byte_arr = BytesIO()
+            # resized_image.save(img_byte_arr, format="PNG")
+
+            # return img_byte_arr.getvalue()
+            return resized_image
+        except Exception as e:
+            self.logger.error(f"Error resizing image: {e}")
+            return None
+
+    def _compare_images(self, img1, img2):
+        """
+        Compare two images using SSIM.
+
+        Parameters:
+        -----------
+        img1 : numpy.ndarray
+            First image
+        img2 : numpy.ndarray
+            Second image
+
+        Returns:
+        --------
+        float
+            Similarity score between 0.0 and 1.0
+        """
+        score, _ = ssim(
+            np.array(img1), np.array(img2), channel_axis=2, full=True
+        )
+        return score
+
+    def match_pieces(self, similarity_threshold=0.6):
+        """
+        Match step pieces to set pieces based on image similarity.
+
+        Parameters:
+        -----------
+        similarity_threshold : float, optional
+            Minimum similarity score to consider a match (0.0 to 1.0)
+
+        Returns:
+        --------
+        tuple
+            Dictionaries with matching/unmatched results
+        """
+        # Reset results
+        self.matched = {}
+        self.unmatched = {}
+
+        # Resize each set piece image
+        resized_set_pieces = {}
+        for element_id, render_imgs in self.set_pieces.items():
+            resized_set_pieces[element_id] = [
+                self._resize_image(render_img["image_data"])
+                for render_img in render_imgs
+                if render_img["image_data"] is not None
+            ]
+
+        # Process each piece image
+        for piece in self.step_pieces:
+            piece_image = self._resize_image(piece["img"])
+            page_num = piece["page"]
+            step_num = piece["step"]
+            piece_num = piece["piece"]
+
+            if piece_image is None:
+                continue
+
+            # Compare with each render image
+            best_match = (None, -1)  # (element_id, similarity_score)
+            for element_id, render_imgs in resized_set_pieces.items():
+                for render_img in render_imgs:
+                    # Skip if render image is None
+                    if render_img is None:
+                        continue
+
+                    # Calculate similarity
+                    similarity = self._compare_images(piece_image, render_img)
+                    if similarity > best_match[1]:
+                        best_match = (element_id, similarity)
+
+            # Choose the appropriate dictionary based on the similarity score
+            d = (
+                self.matched
+                if best_match[1] > similarity_threshold
+                else self.unmatched
+            )
+
+            element_id = best_match[0]
+            if element_id not in d:
+                d[element_id] = {}
+            if page_num not in d[element_id]:
+                d[element_id][page_num] = []
+
+            d[element_id][page_num].append(
+                {
+                    "step": step_num,
+                    "piece": piece_num,
+                    "similarity": best_match[1],
+                }
+            )
+
+        return self.matched, self.unmatched
+
+    def _resize_image_for_display(self, img_bytes, max_size=(100, 100)):
+        """Resize image and convert to base64 for HTML display"""
+        img_pil = Image.open(BytesIO(img_bytes))
+        img_pil.thumbnail(max_size)
+        img_bio = BytesIO()
+        img_pil.save(img_bio, format="PNG")
+        img_b64 = base64.b64encode(img_bio.getvalue()).decode("utf-8")
+        return f'<img src="data:image/png;base64,{img_b64}"/>'
+
+    def create_comparison_dataframe(self, compare_unmatched=False):
+        """
+        Create a Pandas DataFrame showing matched/unmatched pieces and their similarity scores
+        using data from the matched/unmatched dictionaries and the stored images.
+
+        Returns:
+        --------
+        pd.DataFrame
+            DataFrame with comparison data and embedded images
+        """
+        d = self.unmatched if compare_unmatched else self.matched
+        if not d:
+            self.logger.info("No results found. Run match_pieces() first.")
+            return pd.DataFrame()
+
+        # Create lists to store data for DataFrame
+        data_rows = []
+
+        for element_id, pages in d.items():
+            # Find the corresponding render image
+            if element_id not in self.set_pieces:
+                continue
+
+            render_data = self.set_pieces[element_id][
+                0
+            ]  # Use the first render image
+            render_img = render_data["image_data"]
+            render_path = (
+                render_data["path"] if "path" in render_data else None
+            )
+
+            for page_num, steps_data in pages.items():
+                for step_info in steps_data:
+                    step_num = step_info["step"]
+                    similarity = step_info["similarity"]
+                    piece_num = step_info["piece"]
+
+                    # Find the corresponding piece image
+                    piece_data = None
+                    for piece in self.step_pieces:
+                        if (
+                            piece["page"] == page_num
+                            and piece["step"] == step_num
+                            and piece["piece"] == piece_num
+                        ):
+                            piece_data = piece
+                            break
+
+                    if piece_data is None:
+                        continue
+
+                    piece_img = piece_data["img"]
+                    piece_path = (
+                        piece_data["path"] if "path" in piece_data else None
+                    )
+
+                    # Create HTML for images
+                    piece_html = self._resize_image_for_display(piece_img)
+                    render_html = self._resize_image_for_display(render_img)
+
+                    # Add row to data
+                    data_rows.append(
+                        {
+                            "Element ID": element_id,
+                            "Page": page_num,
+                            "Step": step_num,
+                            "Piece Image": piece_html,
+                            "Render Image": render_html,
+                            "Similarity Score": f"{similarity:.3f}",
+                            "Piece Filename": (
+                                piece_path.name if piece_path else ""
+                            ),
+                            "Render Filename": (
+                                render_path.name if render_path else ""
+                            ),
+                        }
+                    )
+
+        # Create DataFrame
+        df = pd.DataFrame(data_rows)
+
+        return df
+
+    def display_comparison_dataframe(self, df=None, compare_unmatched=False):
+        """
+        Display the comparison DataFrame with properly rendered images in a Jupyter notebook
+
+        Parameters:
+        -----------
+        df : pd.DataFrame, optional
+            DataFrame created by create_comparison_dataframe. If None, creates a new one.
+
+        Returns:
+        --------
+        pd.DataFrame
+            DataFrame with comparison data (without HTML)
+        """
+        if df is None:
+            df = self.create_comparison_dataframe(compare_unmatched)
+
+        if df.empty:
+            self.logger.info("No data to display.")
+            return df
+
+        # Display the DataFrame with HTML rendering enabled
+        display(HTML(df.to_html(escape=False)))
+
+        # Return a regular DataFrame without HTML for further processing
+        # Create a copy without the HTML content
+        clean_df = df.copy()
+        if "Piece Image" in clean_df.columns:
+            clean_df["Piece Image"] = "[IMAGE]"
+        if "Render Image" in clean_df.columns:
+            clean_df["Render Image"] = "[IMAGE]"
+
+        return clean_df
 
 
 def main():
+    """Example usage of the PieceMatcher class."""
     pieces_dir = Path("data/processed_booklets/31147_2/pieces")
     renders_dir = Path("data/processed_booklets/31147_3/piece_renders")
 
-    results = match_pieces_from_files(pieces_dir, renders_dir)
+    # Initialize the matcher
+    matcher = PieceMatcher()
 
-    create_comparison_excel(pieces_dir, renders_dir, results)
-    """
-    # Print results
-    for element_id, pages in results.items():
-        print(f"\nElement ID: {element_id}")
-        for page, steps in pages.items():
-            print(f"  Page {page}: Steps {steps}")
-    """
+    # Load pieces and renders
+    matcher.load_step_pieces_from_directory(pieces_dir)
+    matcher.load_set_pieces_from_directory(renders_dir)
+
+    # Match pieces
+    matched, unmatched = matcher.match_pieces(similarity_threshold=0.6)
+
+    # Create and display comparison dataframe
+    df = matcher.create_comparison_dataframe()
+    matcher.display_comparison_dataframe(df)
 
 
 if __name__ == "__main__":

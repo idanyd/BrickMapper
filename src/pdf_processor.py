@@ -1,15 +1,15 @@
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Any
 import logging
 from PIL import Image
 from step_detector import StepDetector
 from typing import Optional
 from utils.pdf_image_extractor import (
-    extract_pages_as_images,
+    extract_pages_as_images_generator,
     extract_pieces_from_step,
 )
 from utils.pdf_parts_list_extractor import extract_parts_list_from_pdf
-from piece_matcher import match_pieces
+from piece_matcher import PieceMatcher
 import io
 
 
@@ -22,20 +22,17 @@ class PDFProcessor:
     def process_manual(
         self,
         parts_list_pages: List[int],
-        set_num: str,
-        booklet_num: str,
         pdf_path: Path,
-        booklet_images_path: Path,
         set_pieces_path: Path = None,
         step_pieces_path: Path = None,
         steps_path: Path = None,
         rejected_images_path: Path = None,
-    ) -> Dict[Dict[List[Dict]]]:
+    ) -> Dict[Any, Dict[Any, List[Dict]]]:
         """Process a single PDF manual and extract steps."""
 
         # Extract the parts list from the manual
         if parts_list_pages:
-            matched_set_pieces, _ = extract_parts_list_from_pdf(
+            set_pieces, _ = extract_parts_list_from_pdf(
                 pdf_path,
                 parts_list_pages,
                 set_pieces_path,
@@ -47,26 +44,17 @@ class PDFProcessor:
             return None
 
         try:
-            # Extract images from PDF, to be used for step detection
-            extract_pages_as_images(
-                pdf_path=pdf_path,
-                images_dir=booklet_images_path,
-                set_num=set_num,
-                booklet_num=booklet_num,
-            )
-
-            results = []
             all_step_pieces = []
             detector = StepDetector()
 
-            # Process each image
-            for img_file in sorted(booklet_images_path.glob("*.jpg")):
-                img = Image.open(img_file)
-                page_num = int(img_file.stem.split("_")[2])
+            for page_img in extract_pages_as_images_generator(pdf_path):
+                img = page_img["image_data"]
+                page_num = page_img["page_num"]
                 page_step_pieces = []
                 # Process each detected step
                 try:
-                    steps = detector.detect_steps(img_file)
+                    self.logger.info(f"Detectiong steps for page {page_num}")
+                    steps = detector.detect_steps(img)
                 except Exception as e:
                     self.logger.error(f"Error detecting steps: {str(e)}")
                     return None
@@ -124,15 +112,7 @@ class PDFProcessor:
                                 step_number,
                             )
 
-                        results.append(
-                            {
-                                "page_number": page_num,
-                                "step_number": step_number,
-                                "image_path": str(image_path),
-                            }
-                        )
-
-            return match_pieces(all_step_pieces, matched_set_pieces)
+            return (all_step_pieces, set_pieces)
 
         except Exception as e:
             self.logger.error(f"Error processing PDF {pdf_path}: {str(e)}")
@@ -184,7 +164,6 @@ class PDFProcessor:
 
 
 def main():
-    import csv
     from utils.logger import setup_logging
 
     setup_logging()
@@ -192,39 +171,37 @@ def main():
     # Set up the test data
     data_dir = Path("data")
     manuals_path = data_dir / "training" / "manuals"
-    manuals_to_sets = manuals_path / "manuals_to_sets.csv"
 
     manual = "6497660"
     parts_list_pages = [37, 38]
 
     pdf_processor = PDFProcessor()
-    with open(manuals_to_sets, "r", newline="") as csvfile:
-        reader = csv.reader(csvfile)
-        manuals_dict = {row[0]: [row[1], row[2]] for row in reader}
-        set_num = manuals_dict[manual][0]
-        booklet_num = manuals_dict[manual][1]
+    matchers = {}
 
-        # Set up directories
-        pdf_path = manuals_path / f"{manual}.pdf"
-        booklet_images_dir = (
-            data_dir / "processed_booklets" / f"{set_num}_{booklet_num}"
-        )
+    matcher = PieceMatcher()
 
-        # You should only set these directories if you want to save the intermediate images
-        step_pieces_dir = booklet_images_dir / "step pieces"
-        steps_dir = booklet_images_dir / "steps"
-        set_pieces_dir = booklet_images_dir / "set pieces"
-        rejects_dir = booklet_images_dir / "rejected inventory images"
+    # Set up directories
+    pdf_path = manuals_path / f"{manual}.pdf"
 
-        # Extract steps
-        steps = pdf_processor.process_manual(
-            parts_list_pages,
-            set_num,
-            booklet_num,
-            pdf_path,
-            booklet_images_dir,
-            rejected_images_path=rejects_dir,
-        )
+    # You should only set these directories if you want to save the intermediate images
+    # step_pieces_dir = booklet_images_dir / "step pieces"
+    # steps_dir = booklet_images_dir / "steps"
+    # set_pieces_dir = booklet_images_dir / "set pieces"
+    # rejects_dir = booklet_images_dir / "rejected inventory images"
+
+    # Extract steps
+    all_step_pieces, set_pieces = pdf_processor.process_manual(
+        parts_list_pages,
+        pdf_path,
+        # rejected_images_path=rejects_dir,
+    )
+
+    matcher.add_step_pieces(all_step_pieces)
+    matcher.add_set_pieces(set_pieces)
+
+    matcher.match_pieces()
+
+    matchers[manual] = matcher
 
 
 if __name__ == "__main__":
