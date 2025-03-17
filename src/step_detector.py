@@ -293,6 +293,8 @@ class StepDetector:
                         step_number_box.xyxy[0].cpu().numpy()
                     )
                     step_number = extract_numbers(step_img)
+                    if not step_number:
+                        continue
                     step_box_index = self._find_matching_step_box(
                         step_number_box, step_boxes
                     )

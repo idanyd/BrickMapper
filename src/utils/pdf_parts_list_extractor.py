@@ -323,7 +323,7 @@ def extract_parts_list_from_pdf(
     pdf_path,
     page_numbers,
     set_pieces_dir=None,
-    all_extracted_images_dir=None,
+    parts_list_images_dir=None,
     rejected_images_dir=None,
 ):
     logger.info("Extracting element IDs")
@@ -338,13 +338,13 @@ def extract_parts_list_from_pdf(
     )
     logger.info(f"Found {len(images)} images")
 
-    if all_extracted_images_dir:
+    if parts_list_images_dir:
         # Save all extracted images, matched and unmatched alike
         logger.info(
-            f"Saving all extracted images to {all_extracted_images_dir}"
+            f"Saving all extracted images to {parts_list_images_dir}"
         )
 
-        save_images(all_extracted_images_dir, images)
+        save_images(parts_list_images_dir, images)
 
     logger.info("Matching element IDs to images...")
     matched, unmatched = match_element_ids_to_images(

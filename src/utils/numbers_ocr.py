@@ -2,6 +2,10 @@ import pytesseract
 from PIL import ImageEnhance
 import matplotlib.pyplot as plt
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def preprocess_image(image):
     # Convert to grayscale
@@ -55,4 +59,5 @@ def extract_numbers(image, display_images=False):
         return int(number)
 
     except Exception as e:
-        return f"Error: {str(e)}"
+        logger.warning(f"Couldn't extract number from step box: {str(e)}")
+        return None

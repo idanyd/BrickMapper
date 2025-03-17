@@ -12,6 +12,8 @@ from utils.pdf_parts_list_extractor import extract_parts_list_from_pdf
 from piece_matcher import PieceMatcher
 import io
 
+from utils.temp import find_parts_list_pages
+
 
 class PDFProcessor:
     """Handles extraction and processing of LEGO instruction manual PDFs."""
@@ -23,9 +25,11 @@ class PDFProcessor:
         self,
         parts_list_pages: List[int],
         pdf_path: Path,
+        page_images_path: Path = None,
         set_pieces_path: Path = None,
         step_pieces_path: Path = None,
         steps_path: Path = None,
+        parts_list_extracted_images_path: Path = None,
         rejected_images_path: Path = None,
     ) -> Dict[Any, Dict[Any, List[Dict]]]:
         """Process a single PDF manual and extract steps."""
@@ -36,7 +40,8 @@ class PDFProcessor:
                 pdf_path,
                 parts_list_pages,
                 set_pieces_path,
-                rejected_images_dir=rejected_images_path,
+                parts_list_extracted_images_path,
+                rejected_images_path,
             )
 
         else:
@@ -50,10 +55,16 @@ class PDFProcessor:
             for page_img in extract_pages_as_images_generator(pdf_path):
                 img = page_img["image_data"]
                 page_num = page_img["page_num"]
+                if page_images_path:
+                    self.logger.info(f"Saving all pages to {page_images_path}")
+                    # Create output directory if it doesn't exist
+                    page_images_path.mkdir(parents=True, exist_ok=True)
+                    self._save_page_image(img, page_num, page_images_path)
+
                 page_step_pieces = []
                 # Process each detected step
                 try:
-                    self.logger.info(f"Detectiong steps for page {page_num}")
+                    self.logger.info(f"Detecting steps for page {page_num}")
                     steps = detector.detect_steps(img)
                 except Exception as e:
                     self.logger.error(f"Error detecting steps: {str(e)}")
@@ -84,11 +95,11 @@ class PDFProcessor:
                             # Create output directory if it doesn't exist
                             step_pieces_path.mkdir(parents=True, exist_ok=True)
                             for i, piece in enumerate(page_step_pieces):
-                                image = Image.open(io.BytesIO(piece["img"]))
+                                img = Image.open(io.BytesIO(piece["img"]))
                                 image_paths.append(
                                     str(
                                         self._save_piece_image(
-                                            image,
+                                            img,
                                             step_pieces_path,
                                             page_num,
                                             step_number,
@@ -105,7 +116,7 @@ class PDFProcessor:
                             # Create output directory if it doesn't exist
                             steps_path.mkdir(parents=True, exist_ok=True)
                             # Save step image
-                            image_path = self._save_step_image(
+                            self._save_step_image(
                                 step_image,
                                 steps_path,
                                 page_num,
@@ -135,6 +146,18 @@ class PDFProcessor:
             self.logger.error(f"Error extracting step image: {str(e)}")
             return None
 
+    def _save_image(self, image: Image.Image, filename: str, output_dir: Path):
+        output_path = output_dir / filename
+        image.save(output_path)
+        return output_path
+
+    def _save_page_image(
+        self, image: Image.Image, page_num: int, output_dir: Path
+    ):
+        """Save a page image with standardized naming."""
+        filename = f"page_{page_num:03d}.jpg"
+        return self._save_image(image, filename, output_dir)
+
     def _save_step_image(
         self,
         image: Image.Image,
@@ -144,9 +167,7 @@ class PDFProcessor:
     ) -> Path:
         """Save a step image with standardized naming."""
         filename = f"page_{page_num:03d}_step_{step_num:03d}.jpg"
-        output_path = output_dir / filename
-        image.save(output_path)
-        return output_path
+        return self._save_image(image, filename, output_dir)
 
     def _save_piece_image(
         self,
@@ -158,15 +179,13 @@ class PDFProcessor:
     ):
         """Save a piece image with standardized naming."""
         filename = f"page_{page_num:03d}_step_{step_num:03d}_piece_{piece_num:03d}.jpg"
-        output_path = output_dir / filename
-        image.save(output_path)
-        return output_path
+        return self._save_image(image, filename, output_dir)
 
 
 def main():
     from utils.logger import setup_logging
 
-    setup_logging()
+    setup_logging(logging.DEBUG)
 
     # Set up the test data
     data_dir = Path("data")
@@ -184,16 +203,16 @@ def main():
     pdf_path = manuals_path / f"{manual}.pdf"
 
     # You should only set these directories if you want to save the intermediate images
+    # booklet_images_dir = data_dir / "processed_booklets" / manual
     # step_pieces_dir = booklet_images_dir / "step pieces"
     # steps_dir = booklet_images_dir / "steps"
     # set_pieces_dir = booklet_images_dir / "set pieces"
     # rejects_dir = booklet_images_dir / "rejected inventory images"
-
+    # page_images_dir = booklet_images_dir / "pages"
     # Extract steps
     all_step_pieces, set_pieces = pdf_processor.process_manual(
         parts_list_pages,
-        pdf_path,
-        # rejected_images_path=rejects_dir,
+        pdf_path
     )
 
     matcher.add_step_pieces(all_step_pieces)
@@ -202,7 +221,6 @@ def main():
     matcher.match_pieces()
 
     matchers[manual] = matcher
-
 
 if __name__ == "__main__":
     main()
