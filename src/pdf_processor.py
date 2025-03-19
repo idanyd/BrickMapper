@@ -11,8 +11,8 @@ from utils.pdf_image_extractor import (
 from utils.pdf_parts_list_extractor import extract_parts_list_from_pdf
 from piece_matcher import PieceMatcher
 import io
-
-from utils.temp import find_parts_list_pages
+import fitz
+from collections import Counter
 
 
 class PDFProcessor:
@@ -181,6 +181,122 @@ class PDFProcessor:
         filename = f"page_{page_num:03d}_step_{step_num:03d}_piece_{piece_num:03d}.jpg"
         return self._save_image(image, filename, output_dir)
 
+    def _analyze_page_structure(self, page):
+        """Analyze the structure of a page to determine if it's a parts list"""
+        # Extract text blocks
+        text_blocks = page.get_text("dict")["blocks"]
+
+        potential_element_ids = []
+
+        # Process text blocks to get positions
+        text_boxes = []
+        for block in text_blocks:
+            if "lines" in block:
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        text_boxes.append({"x0": span["bbox"][0]})
+
+        # Extract all text blocks from the page
+
+        blocks = page.get_text("dict")["blocks"]
+
+        # Find all potential element IDs on the page
+        x_positions = []
+        for block in blocks:
+            if "lines" in block:
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        text = span["text"].strip()
+                        # Count numbers that look like element IDs (more than 4 digits)
+                        if text.isdigit() and len(text) >= 4:
+                            potential_element_ids.append(text)
+                            x_positions.append(
+                                round(span["bbox"][0])
+                            )  # Take the top left corner
+
+        # Analyze column structure
+        if x_positions:
+
+            # Count occurrences of each position to detect grid patterns
+            x_counts = Counter(x_positions)
+
+            # Columns would have multiple elements (>=3) sharing the same x position
+            num_cols = sum(
+                1 for count in x_counts.values() if count >= 3
+            )
+
+            return {
+                "element_ids_count": len(potential_element_ids),
+                "num_cols": num_cols,
+            }
+        else:
+            return {
+                "element_ids_count": len(potential_element_ids),
+                "num_cols": 0,
+            }
+
+    def _is_parts_list_page(self, page):
+        """Determine if a page is likely a parts list based on the analysis"""
+        analysis = self._analyze_page_structure(page)
+
+        has_many_ids = analysis["element_ids_count"] > 10
+        has_columns = analysis["num_cols"] >= 3
+
+        self.logger.debug(f"Element IDs: {analysis['element_ids_count']}")
+        self.logger.debug(f"Number of columns: {analysis['num_cols']}")
+        self.logger.debug(f"Is parts list: {has_many_ids and has_columns}")
+
+        return has_many_ids and has_columns
+
+    def find_parts_list_pages(self, pdf_path):
+        """Find parts list pages in a LEGO manual PDF"""
+        try:
+            doc = fitz.open(pdf_path)
+            total_pages = len(doc)
+
+            # Start from the end and work backwards to find parts list pages
+            parts_list_pages = []
+            in_parts_list_section = False
+
+            for page_num in range(total_pages - 1, -1, -1):
+                self.logger.debug(
+                    f"Analyzing page {page_num + 1}/{total_pages}..."
+                )
+                is_parts = self._is_parts_list_page(doc[page_num])
+
+                if in_parts_list_section:
+                    if not is_parts:
+                        # End of parts list section going backwards
+                        # Mark the next page as the first page
+                        parts_list_pages.append(page_num + 1)
+                        break
+                else:
+                    if is_parts:
+                        # Found the last page of parts list
+                        in_parts_list_section = True
+                        parts_list_pages.append(page_num)
+
+            # Sort pages in ascending order
+            parts_list_pages.sort()
+
+            if parts_list_pages:
+                self.logger.debug(
+                    f"First parts list page: {parts_list_pages[0]+1}"
+                )
+                self.logger.debug(
+                    f"Last parts list page: {parts_list_pages[1]+1}"
+                )
+            else:
+                self.logger.warning("No parts list pages found.")
+
+            doc.close()
+
+            return parts_list_pages
+
+        except Exception as e:
+            self.logger.error(f"Error processing PDF: {e}")
+            return None
+
 
 def main():
     from utils.logger import setup_logging
@@ -191,16 +307,21 @@ def main():
     data_dir = Path("data")
     manuals_path = data_dir / "training" / "manuals"
 
-    manual = "6497660"
-    parts_list_pages = [37, 38]
-
     pdf_processor = PDFProcessor()
     matchers = {}
 
     matcher = PieceMatcher()
 
+    manual = "6497660"
+
     # Set up directories
     pdf_path = manuals_path / f"{manual}.pdf"
+
+    parts_list_pages = pdf_processor.find_parts_list_pages(pdf_path)
+
+    if not parts_list_pages:
+        print(f"Couldn't find a parts list in manual {manual}")
+        return
 
     # You should only set these directories if you want to save the intermediate images
     # booklet_images_dir = data_dir / "processed_booklets" / manual
@@ -211,8 +332,7 @@ def main():
     # page_images_dir = booklet_images_dir / "pages"
     # Extract steps
     all_step_pieces, set_pieces = pdf_processor.process_manual(
-        parts_list_pages,
-        pdf_path
+        parts_list_pages, pdf_path
     )
 
     matcher.add_step_pieces(all_step_pieces)
@@ -221,6 +341,7 @@ def main():
     matcher.match_pieces()
 
     matchers[manual] = matcher
+
 
 if __name__ == "__main__":
     main()
