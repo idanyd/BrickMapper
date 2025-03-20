@@ -23,30 +23,12 @@ class PDFProcessor:
 
     def process_manual(
         self,
-        parts_list_pages: List[int],
         pdf_path: Path,
         page_images_path: Path = None,
-        set_pieces_path: Path = None,
         step_pieces_path: Path = None,
         steps_path: Path = None,
-        parts_list_extracted_images_path: Path = None,
-        rejected_images_path: Path = None,
     ) -> Dict[Any, Dict[Any, List[Dict]]]:
         """Process a single PDF manual and extract steps."""
-
-        # Extract the parts list from the manual
-        if parts_list_pages:
-            set_pieces, _ = extract_parts_list_from_pdf(
-                pdf_path,
-                parts_list_pages,
-                set_pieces_path,
-                parts_list_extracted_images_path,
-                rejected_images_path,
-            )
-
-        else:
-            self.logger.error("No parts list pages provided.")
-            return None
 
         try:
             all_step_pieces = []
@@ -123,7 +105,7 @@ class PDFProcessor:
                                 step_number,
                             )
 
-            return (all_step_pieces, set_pieces)
+            return all_step_pieces
 
         except Exception as e:
             self.logger.error(f"Error processing PDF {pdf_path}: {str(e)}")
@@ -221,9 +203,7 @@ class PDFProcessor:
             x_counts = Counter(x_positions)
 
             # Columns would have multiple elements (>=3) sharing the same x position
-            num_cols = sum(
-                1 for count in x_counts.values() if count >= 3
-            )
+            num_cols = sum(1 for count in x_counts.values() if count >= 3)
 
             return {
                 "element_ids_count": len(potential_element_ids),
@@ -310,37 +290,74 @@ def main():
     pdf_processor = PDFProcessor()
     matchers = {}
 
-    matcher = PieceMatcher()
+    manuals = {
+        "6497658": ("31147", "1"),
+        "6497660": ("31147", "3"),
+        "6497659": ("31147", "2"),
+    }
+    all_sets_set_pieces = {}
 
-    manual = "6497660"
+    for manual in manuals:
+        set_num, booklet_num = manuals[manual][0], manuals[manual][1]
+        # Set up directories
+        pdf_path = manuals_path / f"{manual}.pdf"
 
-    # Set up directories
-    pdf_path = manuals_path / f"{manual}.pdf"
+        # You should only set these directories if you want to save the intermediate images
+        # booklet_images_dir = data_dir / "processed_booklets" / manual
+        # set_pieces_dir = booklet_images_dir / "set pieces"
+        # rejects_dir = booklet_images_dir / "rejected inventory images"
 
-    parts_list_pages = pdf_processor.find_parts_list_pages(pdf_path)
+        parts_list_pages = pdf_processor.find_parts_list_pages(pdf_path)
+        if not parts_list_pages:
+            # Couldn't find a parts list in the manual.
+            # We'll check later if other manuals from the same set have one
+            continue
 
-    if not parts_list_pages:
-        print(f"Couldn't find a parts list in manual {manual}")
-        return
+        if set_num not in all_sets_set_pieces:
+            all_sets_set_pieces[set_num] = {}
 
-    # You should only set these directories if you want to save the intermediate images
-    # booklet_images_dir = data_dir / "processed_booklets" / manual
-    # step_pieces_dir = booklet_images_dir / "step pieces"
-    # steps_dir = booklet_images_dir / "steps"
-    # set_pieces_dir = booklet_images_dir / "set pieces"
-    # rejects_dir = booklet_images_dir / "rejected inventory images"
-    # page_images_dir = booklet_images_dir / "pages"
-    # Extract steps
-    all_step_pieces, set_pieces = pdf_processor.process_manual(
-        parts_list_pages, pdf_path
-    )
+        all_sets_set_pieces[set_num][booklet_num], _ = (
+            extract_parts_list_from_pdf(pdf_path, parts_list_pages)
+        )
 
-    matcher.add_step_pieces(all_step_pieces)
-    matcher.add_set_pieces(set_pieces)
+    # Match each manual with corresponding set pieces
+    for manual in manuals:
+        set_num, booklet_num = manuals[manual][0], manuals[manual][1]
 
-    matcher.match_pieces()
+        # Set up directories
+        pdf_path = manuals_path / f"{manual}.pdf"
 
-    matchers[manual] = matcher
+        # You should only set these directories if you want to save the intermediate images
+        # booklet_images_dir = data_dir / "processed_booklets" / manual
+        # step_pieces_dir = booklet_images_dir / "step pieces"
+        # steps_dir = booklet_images_dir / "steps"
+        # page_images_dir = booklet_images_dir / "pages"
+
+        if set_num in all_sets_set_pieces:
+            if booklet_num in all_sets_set_pieces[set_num]:
+                set_pieces = all_sets_set_pieces[set_num][booklet_num]
+            else:
+                # The parts list wasn't found for this manual.
+                # Try to use the parts list from another manual in the same set
+                _, set_pieces = next(
+                    iter(all_sets_set_pieces[set_num].items())
+                )
+        else:
+            pdf_processor.logger.warning(
+                f"No parts list found for {manual} in set {set_num}"
+            )
+
+        # Extract steps
+        all_step_pieces = pdf_processor.process_manual(pdf_path)
+
+        matcher = PieceMatcher()
+
+        matcher.add_step_pieces(all_step_pieces)
+        matcher.add_set_pieces(set_pieces)
+
+        matcher.match_pieces()
+
+        matchers[manual] = matcher
 
 
 if __name__ == "__main__":
