@@ -1,4 +1,3 @@
-import fitz
 from pathlib import Path
 from PIL import Image
 import numpy as np
@@ -88,8 +87,7 @@ def extract_element_ids_and_positions_impl(
     return element_ids
 
 
-def extract_element_ids_and_positions(pdf_path, page_numbers):
-    doc = fitz.open(pdf_path)
+def extract_element_ids_and_positions(doc, page_numbers):
     element_ids = []
     column_boundaries = {}
 
@@ -141,14 +139,12 @@ def extract_element_ids_and_positions(pdf_path, page_numbers):
 
         column_boundaries[page_num] = page_column_boundaries
 
-    doc.close()
     # Sort pieces by page, column and vertical position
     element_ids.sort(key=lambda x: (x["page"], x["column"], x["bbox"][1]))
     return element_ids, column_boundaries
 
 
-def extract_images_and_positions(pdf_path, page_numbers, rejected_images_dir):
-    doc = fitz.open(pdf_path)
+def extract_images_and_positions(doc, page_numbers, rejected_images_dir):
     images = []
 
     for page_num in page_numbers:
@@ -198,7 +194,6 @@ def extract_images_and_positions(pdf_path, page_numbers, rejected_images_dir):
                         ],
                     )
 
-    doc.close()
     # Sort images by page and vertical position
     images.sort(key=lambda x: (x["page"], x["bbox"][1]))
     return images
@@ -320,7 +315,7 @@ def match_element_ids_to_images(
 
 
 def extract_parts_list_from_pdf(
-    pdf_path,
+    doc,
     page_numbers,
     set_pieces_dir=None,
     parts_list_images_dir=None,
@@ -328,21 +323,19 @@ def extract_parts_list_from_pdf(
 ):
     logger.info("Extracting element IDs")
     element_ids, column_boundaries = extract_element_ids_and_positions(
-        pdf_path, page_numbers
+        doc, page_numbers
     )
     logger.info(f"Found {len(element_ids)} element IDs")
 
     logger.info("Extracting images...")
     images = extract_images_and_positions(
-        pdf_path, page_numbers, rejected_images_dir
+        doc, page_numbers, rejected_images_dir
     )
     logger.info(f"Found {len(images)} images")
 
     if parts_list_images_dir:
         # Save all extracted images, matched and unmatched alike
-        logger.info(
-            f"Saving all extracted images to {parts_list_images_dir}"
-        )
+        logger.info(f"Saving all extracted images to {parts_list_images_dir}")
 
         save_images(parts_list_images_dir, images)
 
@@ -359,19 +352,22 @@ def extract_parts_list_from_pdf(
 
 
 def main():
+    import fitz
+
     setup_logging(logging.INFO)
     # Test the code
     manual = "6497660"
     set_num = "31147"
     booklet_num = "3"
     pdf_path = Path(f"data/training/manuals/{manual}.pdf")
+    doc = fitz.open(pdf_path)
     piece_renders_dir = Path(
         f"data/processed_booklets/{set_num}_{booklet_num}/piece_renders"
     )
     page_numbers = [n for n in range(37, 39)]  # Pages 38-39 in the PDF
 
     matched, unmatched = extract_parts_list_from_pdf(
-        pdf_path, page_numbers, piece_renders_dir
+        doc, page_numbers, piece_renders_dir
     )
 
     # Log unmatched images info
@@ -382,6 +378,8 @@ def main():
             logger.info(
                 f"xref: {img['xref']}, Page: {img['page']}, Position: {img['bbox']}, Size: {img['width']}x{img['height']}"
             )
+
+    doc.close()
 
 
 if __name__ == "__main__":

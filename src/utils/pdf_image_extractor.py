@@ -1,5 +1,3 @@
-# src/utils/pdf_image_extractor.py
-
 import fitz
 from pathlib import Path
 import shutil
@@ -14,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def extract_pages_as_images(
-    pdf_path: Path,
+    pdf_document: fitz.Document,
     images_dir: Path,
     set_num: str,
     booklet_num: str,
@@ -23,8 +21,10 @@ def extract_pages_as_images(
     Extract each page of a PDF as a PNG image.
 
     Args:
-        pdf_path: Path to the PDF file
-        output_dir: Directory where images will be saved
+        pdf_document: PDF document object
+        images_dir: Directory where images will be saved
+        set_num: Set number for filename
+        booklet_num: Booklet number for filename
 
     Returns:
         List of paths to extracted image files
@@ -34,69 +34,52 @@ def extract_pages_as_images(
 
     created_files = []
 
-    # Open PDF
-    pdf_document = fitz.open(pdf_path)
+    num_pages = len(pdf_document)
+    padding = len(str(num_pages))
+    # Iterate through pages
+    for page_num, page in enumerate(pdf_document):
 
-    try:
-        num_pages = len(pdf_document)
-        padding = len(str(num_pages))
-        # Iterate through pages
-        for page_num, page in enumerate(pdf_document):
+        # Get page pixmap (image)
+        pix = page.get_pixmap()
 
-            # Get page pixmap (image)
-            pix = page.get_pixmap()
+        # Generate output path
+        page_num_str = str(page_num + 1).zfill(padding)
+        image_path = images_dir / f"{set_num}_{booklet_num}_{page_num_str}.jpg"
 
-            # Generate output path
-            page_num_str = str(page_num + 1).zfill(padding)
-            image_path = (
-                images_dir / f"{set_num}_{booklet_num}_{page_num_str}.jpg"
-            )
-
-            # Save image
-            pix.save(image_path)
-            created_files.append(image_path)
-            logger.info(f"Saved page {page_num + 1} as: {image_path}")
-
-    finally:
-        pdf_document.close()
+        # Save image
+        pix.save(image_path)
+        created_files.append(image_path)
+        logger.info(f"Saved page {page_num + 1} as: {image_path}")
 
     logger.info(f"Extracted {len(created_files)} pages as images")
     return created_files
 
 
-def extract_pages_as_images_generator(pdf_path: Path):
+def extract_pages_as_images_generator(pdf_document: fitz.Document):
     """
     Extract each page of a PDF as a PNG image and yield them one by one.
 
     Args:
-        pdf_path: Path to the PDF file
-        set_num: Set number for filename
-        booklet_num: Booklet number for filename
+        pdf_document: PDF document object
 
     Yields:
         Tuple of (page_number, image_data) for each page
     """
-    # Open PDF
-    pdf_document = fitz.open(pdf_path)
 
-    try:
-        # Iterate through pages
-        for page_num, page in enumerate(pdf_document):
-            # Get page pixmap (image)
-            pix = page.get_pixmap()
+    # Iterate through pages
+    for page_num, page in enumerate(pdf_document):
+        # Get page pixmap (image)
+        pix = page.get_pixmap()
 
-            # Convert to PIL Image
-            img_bytes = pix.tobytes("jpeg")
-            pil_image = Image.open(io.BytesIO(img_bytes))
+        # Convert to PIL Image
+        img_bytes = pix.tobytes("jpeg")
+        pil_image = Image.open(io.BytesIO(img_bytes))
 
-            # Yield the image data and metadata
-            yield {
-                "page_num": page_num + 1,
-                "image_data": pil_image,
-            }
-
-    finally:
-        pdf_document.close()
+        # Yield the image data and metadata
+        yield {
+            "page_num": page_num + 1,
+            "image_data": pil_image,
+        }
 
 
 def clean_output_directory(output_dir: Path):
@@ -112,8 +95,7 @@ def clean_output_directory(output_dir: Path):
     output_dir.mkdir(parents=True)
 
 
-def extract_pieces_from_step(pdf_path, page_num, step_info):
-    doc = fitz.open(pdf_path)
+def extract_pieces_from_step(doc, page_num, step_info):
     images = []
 
     page = doc[page_num]
@@ -145,7 +127,6 @@ def extract_pieces_from_step(pdf_path, page_num, step_info):
 
             images.append(base_image["image"])
 
-    doc.close()
     return images
 
 
@@ -181,18 +162,22 @@ def main():
             booklet_num = row[2]
             # Extract images
             if pdf_path.exists():
+                # Open the PDF file
+                doc = fitz.open(pdf_path)
                 created_files = extract_pages_as_images(
-                    pdf_path=pdf_path,
+                    pdf_document=doc,
                     images_dir=extracted_images_dir,
                     set_num=set_num,
                     booklet_num=booklet_num,
-                    dpi=DPI,
                 )
 
                 # Print summary of created files
                 logger.info("\nCreated/Modified files during execution:")
                 for file_path in created_files:
                     logger.info(file_path)
+
+                # Close the PDF file
+                doc.close()
             else:
                 logger.error(f"PDF file not found: {pdf_path}")
 

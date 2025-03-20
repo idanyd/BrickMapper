@@ -23,7 +23,7 @@ class PDFProcessor:
 
     def process_manual(
         self,
-        pdf_path: Path,
+        doc: fitz.Document,
         page_images_path: Path = None,
         step_pieces_path: Path = None,
         steps_path: Path = None,
@@ -34,7 +34,7 @@ class PDFProcessor:
             all_step_pieces = []
             detector = StepDetector()
 
-            for page_img in extract_pages_as_images_generator(pdf_path):
+            for page_img in extract_pages_as_images_generator(doc):
                 img = page_img["image_data"]
                 page_num = page_img["page_num"]
                 if page_images_path:
@@ -55,7 +55,7 @@ class PDFProcessor:
                 for step_number, step_info in steps.items():
                     # Extract all piece images from the step box if possible
                     step_piece_images = self._extract_step_pieces(
-                        pdf_path, page_num - 1, step_info
+                        doc, page_num - 1, step_info
                     )
                     if step_piece_images and step_info.size:
                         page_step_pieces = [
@@ -108,14 +108,12 @@ class PDFProcessor:
             return all_step_pieces
 
         except Exception as e:
-            self.logger.error(f"Error processing PDF {pdf_path}: {str(e)}")
+            self.logger.error(f"Error processing PDF: {e}")
             raise e
 
-    def _extract_step_pieces(
-        self, pdf_path: Path, page_num: int, step_info: Dict
-    ):
+    def _extract_step_pieces(self, doc: Path, page_num: int, step_info: Dict):
         """Extract renders of pieces from the step box."""
-        step_images = extract_pieces_from_step(pdf_path, page_num, step_info)
+        step_images = extract_pieces_from_step(doc, page_num, step_info)
         return step_images
 
     def _extract_step_image(
@@ -228,10 +226,9 @@ class PDFProcessor:
 
         return has_many_ids and has_columns
 
-    def find_parts_list_pages(self, pdf_path):
+    def find_parts_list_pages(self, doc):
         """Find parts list pages in a LEGO manual PDF"""
         try:
-            doc = fitz.open(pdf_path)
             total_pages = len(doc)
 
             # Start from the end and work backwards to find parts list pages
@@ -269,8 +266,6 @@ class PDFProcessor:
             else:
                 self.logger.warning("No parts list pages found.")
 
-            doc.close()
-
             return parts_list_pages
 
         except Exception as e:
@@ -282,6 +277,7 @@ def main():
     from utils.logger import setup_logging
 
     setup_logging(logging.DEBUG)
+    logger = logging.getLogger(__name__)
 
     # Set up the test data
     data_dir = Path("data")
@@ -291,23 +287,24 @@ def main():
     matchers = {}
 
     manuals = {
-        "6497658": ("31147", "1"),
         "6497660": ("31147", "3"),
-        "6497659": ("31147", "2"),
     }
     all_sets_set_pieces = {}
-
+    documents = {}
     for manual in manuals:
         set_num, booklet_num = manuals[manual][0], manuals[manual][1]
         # Set up directories
         pdf_path = manuals_path / f"{manual}.pdf"
+        documents[manual] = fitz.open(pdf_path)
 
         # You should only set these directories if you want to save the intermediate images
         # booklet_images_dir = data_dir / "processed_booklets" / manual
         # set_pieces_dir = booklet_images_dir / "set pieces"
         # rejects_dir = booklet_images_dir / "rejected inventory images"
 
-        parts_list_pages = pdf_processor.find_parts_list_pages(pdf_path)
+        parts_list_pages = pdf_processor.find_parts_list_pages(
+            documents[manual]
+        )
         if not parts_list_pages:
             # Couldn't find a parts list in the manual.
             # We'll check later if other manuals from the same set have one
@@ -317,7 +314,7 @@ def main():
             all_sets_set_pieces[set_num] = {}
 
         all_sets_set_pieces[set_num][booklet_num], _ = (
-            extract_parts_list_from_pdf(pdf_path, parts_list_pages)
+            extract_parts_list_from_pdf(documents[manual], parts_list_pages)
         )
 
     # Match each manual with corresponding set pieces
@@ -325,7 +322,6 @@ def main():
         set_num, booklet_num = manuals[manual][0], manuals[manual][1]
 
         # Set up directories
-        pdf_path = manuals_path / f"{manual}.pdf"
 
         # You should only set these directories if you want to save the intermediate images
         # booklet_images_dir = data_dir / "processed_booklets" / manual
@@ -343,12 +339,18 @@ def main():
                     iter(all_sets_set_pieces[set_num].items())
                 )
         else:
-            pdf_processor.logger.warning(
+            logger.warning(
                 f"No parts list found for {manual} in set {set_num}"
             )
+            continue
 
         # Extract steps
-        all_step_pieces = pdf_processor.process_manual(pdf_path)
+        logger.info(f"Processing manual {manual}...")
+        try:
+            all_step_pieces = pdf_processor.process_manual(documents[manual])
+        except Exception as e:
+            logger.error(f"Error processing manual {manual}: {e}")
+            continue
 
         matcher = PieceMatcher()
 
@@ -358,6 +360,9 @@ def main():
         matcher.match_pieces()
 
         matchers[manual] = matcher
+
+    for doc in documents.values():
+        doc.close()
 
 
 if __name__ == "__main__":
