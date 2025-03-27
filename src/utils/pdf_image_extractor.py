@@ -98,16 +98,12 @@ def clean_output_directory(output_dir: Path):
 def extract_pieces_from_step(doc, page_num, step_info):
     images = []
 
+    # Get the page
     page = doc[page_num]
 
-    # Get all images on the page
+    # Iterate over all images on the page
     for img in page.get_images(full=True):
         xref = img[0]
-        base_image = doc.extract_image(xref)
-
-        if base_image["width"] < 10 or base_image["height"] < 10:
-            # Skip small images
-            continue
 
         # Get the image rectangle (bbox) from the page
         bbox = None
@@ -116,15 +112,27 @@ def extract_pieces_from_step(doc, page_num, step_info):
             bbox = rect
             break
 
-        # Only add images that are in the step bounding box
+        # Skip if no bounding box is found
+        if not bbox:
+            continue
+
+        # Calculate width and height from the bounding box
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+
+        # Skip small images based on bbox dimensions
+        if width < 10 or height < 10:
+            continue
+
+        # Check if the image is within the step bounding box
         if (
-            bbox
-            and bbox[0] > step_info[0]
+            bbox[0] > step_info[0]
             and bbox[1] > step_info[1]
             and bbox[2] < step_info[2]
             and bbox[3] < step_info[3]
         ):
-
+            # Extract the image metadata after all the filtering
+            base_image = doc.extract_image(xref)
             images.append(base_image["image"])
 
     return images
