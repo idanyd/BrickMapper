@@ -22,6 +22,10 @@ class LegoDataLoader:
         self.manual_id = manual_id
         self.batch_size = 1000  # Batch size for inserting step elements
 
+    def __del__(self):
+        """Dispose of the database connection engine"""
+        self.engine.dispose()
+
     def create_tables(self):
         """Create the new tables for instruction steps"""
         sql = [
@@ -233,7 +237,7 @@ class LegoDataLoader:
             },
         ).fetchone()
 
-    def insert_steps_and_get_ids(self, set_steps_df, engine):
+    def insert_steps_and_get_ids(self, set_steps_df):
         """
         Insert steps into the database and get back the assigned step_ids.
 
@@ -249,7 +253,7 @@ class LegoDataLoader:
         )  # Maps (inventory_id, booklet_number, step_number) to step_id
 
         try:
-            with engine.begin() as conn:
+            with self.engine.begin() as conn:
                 # Insert set_steps data
                 for _, row in set_steps_df.iterrows():
 
@@ -347,7 +351,7 @@ class LegoDataLoader:
         )
         return step_elements_df.drop_duplicates()
 
-    def insert_step_elements(self, step_elements_df, engine):
+    def insert_step_elements(self, step_elements_df):
         """
         Insert step elements into the database.
 
@@ -359,7 +363,7 @@ class LegoDataLoader:
             bool: True if successful, False otherwise
         """
         try:
-            with engine.begin() as conn:
+            with self.engine.begin() as conn:
                 inserted, skipped = 0, 0
                 # Insert in batches to avoid potential memory issues
                 for i in range(0, len(step_elements_df), self.batch_size):
@@ -415,51 +419,44 @@ class LegoDataLoader:
             self.logger.error(f"Error inserting step_elements data: {str(e)}")
             return False
 
+    def process_and_load_manual_data(self, manual_data_dict):
+        """
+        Process manual data dictionary and load it into the database using the schema.
 
-def process_and_load_manual_data(
-    manual_data_dict, manual_mapping_csv, inventories_csv, db_url, manual
-):
-    """
-    Process manual data dictionary and load it into the database using the schema.
+        Args:
+            manual_data_dict: Dictionary with format {manual_id: {element_id: {page_num:[{'step': step_num, ...}]}}}
+            inventories_csv: Path to inventories.csv
+            db_url: Database connection URL
+        """
 
-    Args:
-        manual_data_dict: Dictionary with format {manual_id: {element_id: {page_num:[{'step': step_num, ...}]}}}
-        inventories_csv: Path to inventories.csv
-        db_url: Database connection URL
-    """
+        self.create_tables()
 
-    # Create data loader and ensure tables exist
-    loader = LegoDataLoader(
-        db_url, manual_mapping_csv, inventories_csv, manual
-    )
-    loader.create_tables()
+        # Load reference data
+        manual_mapping, inventories = self.load_reference_data()
+        if manual_mapping is None or inventories is None:
+            return
 
-    # Load reference data
-    manual_mapping, inventories = loader.load_reference_data()
-    if manual_mapping is None or inventories is None:
-        return
+        # Extract unique steps
+        set_steps_df = self.extract_unique_steps(
+            manual_data_dict, manual_mapping, inventories
+        )
+        logger.debug("Set steps data sample:")
+        logger.debug(set_steps_df.head())
 
-    # Extract unique steps
-    set_steps_df = loader.extract_unique_steps(
-        manual_data_dict, manual_mapping, inventories
-    )
-    logger.debug("Set steps data sample:")
-    logger.debug(set_steps_df.head())
+        # Insert steps and get step_ids
+        step_id_map = self.insert_steps_and_get_ids(set_steps_df)
+        if not step_id_map:
+            return
 
-    # Insert steps and get step_ids
-    step_id_map = loader.insert_steps_and_get_ids(set_steps_df, loader.engine)
-    if not step_id_map:
-        return
+        # Extract step elements
+        step_elements_df = self.extract_step_elements(
+            manual_data_dict, manual_mapping, inventories, step_id_map
+        )
+        logger.debug("Step elements data sample:")
+        logger.debug(step_elements_df.head())
 
-    # Extract step elements
-    step_elements_df = loader.extract_step_elements(
-        manual_data_dict, manual_mapping, inventories, step_id_map
-    )
-    logger.debug("Step elements data sample:")
-    logger.debug(step_elements_df.head())
-
-    # Insert step elements
-    loader.insert_step_elements(step_elements_df, loader.engine)
+        # Insert step elements
+        self.insert_step_elements(step_elements_df)
 
 
 def main():
@@ -487,13 +484,11 @@ def main():
     inventories_csv = Path("data/inventories.csv")
 
     # Uncomment to run with example data
-    process_and_load_manual_data(
-        example_dict,
-        manual_mapping_csv,
-        inventories_csv,
-        db_url,
-        example_manual_id,
+    # Create data loader and ensure tables exist
+    loader = LegoDataLoader(
+        manual_mapping_csv, inventories_csv, db_url, example_manual_id
     )
+    loader.process_and_load_manual_data(example_dict)
 
 
 if __name__ == "__main__":

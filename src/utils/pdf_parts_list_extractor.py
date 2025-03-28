@@ -91,7 +91,7 @@ def extract_element_ids_and_positions(doc, page_numbers):
     element_ids = []
     column_boundaries = {}
 
-    for page_num in page_numbers:
+    for page_num in range(page_numbers['first'], page_numbers['last'] + 1):
         page = doc[page_num]
         blocks = page.get_text("dict")["blocks"]
 
@@ -147,7 +147,7 @@ def extract_element_ids_and_positions(doc, page_numbers):
 def extract_images_and_positions(doc, page_numbers, rejected_images_dir):
     images = []
 
-    for page_num in page_numbers:
+    for page_num in range(page_numbers['first'], page_numbers['last'] + 1):
         page = doc[page_num]
 
         # Get all images on the page
@@ -316,20 +316,20 @@ def match_element_ids_to_images(
 
 def extract_parts_list_from_pdf(
     doc,
-    page_numbers,
+    parts_list_pages,
     set_pieces_dir=None,
     parts_list_images_dir=None,
     rejected_images_dir=None,
 ):
     logger.info("Extracting element IDs")
     element_ids, column_boundaries = extract_element_ids_and_positions(
-        doc, page_numbers
+        doc, parts_list_pages
     )
     logger.info(f"Found {len(element_ids)} element IDs")
 
     logger.info("Extracting images...")
     images = extract_images_and_positions(
-        doc, page_numbers, rejected_images_dir
+        doc, parts_list_pages, rejected_images_dir
     )
     logger.info(f"Found {len(images)} images")
 

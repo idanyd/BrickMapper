@@ -32,7 +32,8 @@ class PDFProcessor:
 
         try:
             all_step_pieces = []
-            detector = StepDetector()
+            total_steps = 0
+            detector = StepDetector(doc)
 
             for page_img in extract_pages_as_images_generator(doc):
                 img = page_img["image_data"]
@@ -47,12 +48,27 @@ class PDFProcessor:
                 # Process each detected step
                 try:
                     self.logger.info(f"Detecting steps for page {page_num}")
-                    steps = detector.detect_steps(img)
+                    steps = detector.detect_steps(img, page_num - 1)
                 except Exception as e:
                     self.logger.error(f"Error detecting steps: {str(e)}")
                     return None
 
                 for step_number, step_info in steps.items():
+                    total_steps += 1
+                    if steps_path:
+                        # Extract and save step image
+                        step_image = self._extract_step_image(img, step_info)
+
+                        if steps_path and step_image and step_info.size:
+                            # Create output directory if it doesn't exist
+                            steps_path.mkdir(parents=True, exist_ok=True)
+                            # Save step image
+                            self._save_step_image(
+                                step_image,
+                                steps_path,
+                                page_num,
+                                step_number,
+                            )
                     # Extract all piece images from the step box if possible
                     step_piece_images = self._extract_step_pieces(
                         doc, page_num - 1, step_info
@@ -105,7 +121,7 @@ class PDFProcessor:
                                 step_number,
                             )
 
-            return all_step_pieces
+            return all_step_pieces, total_steps
 
         except Exception as e:
             self.logger.error(f"Error processing PDF: {e}")
@@ -227,12 +243,29 @@ class PDFProcessor:
         return has_many_ids and has_columns
 
     def find_parts_list_pages(self, doc):
-        """Find parts list pages in a LEGO manual PDF"""
+        """
+        Identify the first and last pages of the parts list section in a LEGO manual PDF.
+
+        This function scans the pages of a LEGO manual PDF in reverse order to locate
+        the parts list section. It returns a dictionary with the indices of the first
+        and last pages of the section, or an empty dictionary if no parts list is found.
+
+        Args:
+            doc (list): A list-like object representing the pages of the PDF document.
+
+        Returns:
+            dict: A dictionary with keys 'first' and 'last' indicating the 0-based indices
+                of the first and last pages of the parts list section. Returns an empty
+                dictionary if no parts list is found, or `None` if an error occurs.
+
+        Notes:
+            - The function assumes the parts list section is located toward the end of the document.
+        """
         try:
             total_pages = len(doc)
 
             # Start from the end and work backwards to find parts list pages
-            parts_list_pages = []
+            parts_list_pages = {}
             in_parts_list_section = False
 
             for page_num in range(total_pages - 1, -1, -1):
@@ -245,23 +278,20 @@ class PDFProcessor:
                     if not is_parts:
                         # End of parts list section going backwards
                         # Mark the next page as the first page
-                        parts_list_pages.append(page_num + 1)
+                        parts_list_pages["first"] = page_num + 1
                         break
                 else:
                     if is_parts:
                         # Found the last page of parts list
                         in_parts_list_section = True
-                        parts_list_pages.append(page_num)
-
-            # Sort pages in ascending order
-            parts_list_pages.sort()
+                        parts_list_pages["last"] = page_num
 
             if parts_list_pages:
                 self.logger.debug(
-                    f"First parts list page: {parts_list_pages[0]+1}"
+                    f"First parts list page: {parts_list_pages['first']+1}"
                 )
                 self.logger.debug(
-                    f"Last parts list page: {parts_list_pages[1]+1}"
+                    f"Last parts list page: {parts_list_pages['last']+1}"
                 )
             else:
                 self.logger.warning("No parts list pages found.")
@@ -347,7 +377,9 @@ def main():
         # Extract steps
         logger.info(f"Processing manual {manual}...")
         try:
-            all_step_pieces = pdf_processor.process_manual(documents[manual])
+            all_step_pieces, _ = pdf_processor.process_manual(
+                documents[manual]
+            )
         except Exception as e:
             logger.error(f"Error processing manual {manual}: {e}")
             continue

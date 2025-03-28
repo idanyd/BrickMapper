@@ -6,7 +6,6 @@ from pathlib import Path
 import yaml
 import matplotlib.pyplot as plt
 from PIL import Image
-from utils.numbers_ocr import extract_numbers
 from enum import Enum
 
 import logging
@@ -25,10 +24,13 @@ class BoxClass(Enum):
 
 
 class StepDetector:
-    def __init__(self):
+    def __init__(self, doc):
+        """Initialize the StepDetector class"""
+        # Load the best model if it exists
         self.model = (
             YOLO(BEST_MODEL_PATH) if BEST_MODEL_PATH.exists() else None
         )
+        self.manual_doc = doc
 
     @staticmethod
     def init_run(tags=None):
@@ -94,7 +96,7 @@ class StepDetector:
 
         return nearest_idx
 
-    def setup_yolo_training(
+    def train_model(
         self,
         data_yaml_path,
         model_size="n",  # n (nano), s (small), m (medium), l (large), x (xlarge)
@@ -250,7 +252,46 @@ class StepDetector:
 
         logger.info(f"Saved annotated image to: {output_path}")
 
-    def detect_steps(self, image, conf_threshold=0.25):
+    def _extract_numbers(self, page_num, box, tolerance=10):
+        """
+        Extract numbers from the given page_num and box coordinates,
+        using the manual doc.
+
+        Args:
+            page_num (int): Page number of the image
+            box (list): Bounding box coordinates [x1, y1, x2, y2]
+
+        Returns:
+            int: Extracted number from the image
+            Or None if no number is found
+        """
+        page = self.manual_doc[page_num]
+        blocks = page.get_text("dict")["blocks"]
+
+        # Increase the box size by tolerance
+        box[0], box[1], box[2], box[3] = (
+            box[0] - tolerance,
+            box[1] - tolerance,
+            box[2] + tolerance,
+            box[3] + tolerance,
+        )
+        for block in blocks:
+            if "lines" in block:
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        text = span["text"].strip()
+                        # Check if the textbox is within the bounding box
+                        if (
+                            (span["bbox"][0] >= box[0])
+                            and (span["bbox"][1] >= box[1])
+                            and (span["bbox"][2] <= box[2])
+                            and (span["bbox"][3] <= box[3])
+                        ):
+                            return int(text)
+
+        return None
+
+    def detect_steps(self, image, page_num, conf_threshold=0.25):
         """
         Detect steps in an image and return the bounding box coordinates.
 
@@ -289,10 +330,9 @@ class StepDetector:
 
                 for step_number_box in step_numbers:
                     # Extract number from step
-                    step_img = image.crop(
-                        step_number_box.xyxy[0].cpu().numpy()
+                    step_number = self._extract_numbers(
+                        page_num, step_number_box.xyxy[0].cpu().numpy()
                     )
-                    step_number = extract_numbers(step_img)
                     if not step_number:
                         continue
                     step_box_index = self._find_matching_step_box(
@@ -497,7 +537,7 @@ def main(train=False, evaluate=False, test=False):
 
     if train:
         # Start training
-        detector.setup_yolo_training(data_yaml_path=ANNOTATIONS_PATH)
+        detector.train_model(data_yaml_path=ANNOTATIONS_PATH)
 
     if evaluate:
         # Evaluate the model
