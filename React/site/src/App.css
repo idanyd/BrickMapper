@@ -1,0 +1,22 @@
+/* src/App.css */
+.scrollable-table {
+  max-height: 300px; /* Set a maximum height for the scrollable area */
+  overflow-y: auto; /* Enable vertical scrolling */
+  border: 1px solid #ccc; /* Add a border around the table */
+  margin-bottom: 20px; /* Add some space below the table */
+}
+
+table {
+  width: 100%; /* Make the table take the full width */
+  border-collapse: collapse; /* Collapse borders */
+}
+
+th, td {
+  border: 1px solid #ddd; /* Add borders to table cells */
+  padding: 8px; /* Add padding to table cells */
+  text-align: left; /* Align text to the left */
+}
+
+th {
+  background-color: #f2f2f2; /* Light gray background for header */
+}
