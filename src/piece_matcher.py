@@ -14,82 +14,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def process_piece_worker(args):
-    """
-    Worker function to process a single piece.
-    Must be at module level for ProcessPoolExecutor to work.
-
-    Args:
-        args: tuple of (piece, resized_set_pieces)
-    """
-    piece, resized_set_pieces = args
-
-    # Convert piece image to PIL.Image and resize
-    piece_image = _resize_image(piece["img"])
-
-    # Compare with each render image
-    best_match = (None, -1)  # (element_id, similarity_score)
-    for element_id, render_imgs in resized_set_pieces.items():
-        for render_img in render_imgs:
-            # Skip if render image is None
-            if render_img is None:
-                continue
-
-            # Calculate similarity
-            score, _ = ssim(
-                np.array(piece_image),
-                np.array(render_img),
-                channel_axis=2,
-                full=True,
-            )
-            if score > best_match[1]:
-                best_match = (element_id, score)
-
-    return {
-        "piece": piece,
-        "element_id": best_match[0],
-        "similarity": best_match[1],
-    }
-
-
-def _resize_image(img, target_size=(200, 200)):
-    """
-    Resize an image to a standard size.
-
-    Parameters:
-    -----------
-    img_bytes : bytes
-        Image data in bytes format
-    target_size : tuple, optional
-        Target size (width, height)
-
-    Returns:
-    --------
-    numpy.ndarray
-        Resized image
-    """
-    try:
-        # Convert to PIL Image
-        try:
-            image_pil = Image.fromarray(img)
-        except Exception:
-            # If the image is not in a format that can be converted directly, use BytesIO
-            image_pil = Image.open(BytesIO(img))
-
-        # Resize the image
-        resized_image = image_pil.resize(target_size, Image.Resampling.LANCZOS)
-
-        # Convert to RGB if it's not already
-        if resized_image.mode != "RGB":
-            resized_image = resized_image.convert("RGB")
-
-        # return img_byte_arr.getvalue()
-        return resized_image
-    except Exception as e:
-        logger.error(f"Error resizing image: {e}")
-        return None
-
-
 class PieceMatcher:
     """Class for matching LEGO pieces from instruction steps to set piece renders."""
 
@@ -266,7 +190,7 @@ class PieceMatcher:
         resized_set_pieces = {}
         for element_id, render_imgs in self.set_pieces.items():
             resized_set_pieces[element_id] = [
-                _resize_image(render_img["image_data"])
+                self._resize_image(render_img["image_data"])
                 for render_img in render_imgs
                 if render_img["image_data"] is not None
             ]
@@ -278,7 +202,9 @@ class PieceMatcher:
 
         # Process pieces in parallel
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            results = list(executor.map(process_piece_worker, process_args))
+            results = list(
+                executor.map(self.process_piece_worker, process_args)
+            )
 
         # Process results and organize into matched/unmatched dictionaries
         for result in results:
@@ -444,6 +370,84 @@ class PieceMatcher:
 
         return clean_df
 
+    @staticmethod
+    def process_piece_worker(args):
+        """
+        Worker function to process a single piece.
+        Must be at module level for ProcessPoolExecutor to work.
+
+        Args:
+            args: tuple of (piece, resized_set_pieces)
+        """
+        piece, resized_set_pieces = args
+
+        # Convert piece image to PIL.Image and resize
+        piece_image = PieceMatcher._resize_image(piece["img"])
+
+        # Compare with each render image
+        best_match = (None, -1)  # (element_id, similarity_score)
+        for element_id, render_imgs in resized_set_pieces.items():
+            for render_img in render_imgs:
+                # Skip if render image is None
+                if render_img is None:
+                    continue
+
+                # Calculate similarity
+                score, _ = ssim(
+                    np.array(piece_image),
+                    np.array(render_img),
+                    channel_axis=2,
+                    full=True,
+                )
+                if score > best_match[1]:
+                    best_match = (element_id, score)
+
+        return {
+            "piece": piece,
+            "element_id": best_match[0],
+            "similarity": best_match[1],
+        }
+
+    @staticmethod
+    def _resize_image(img, target_size=(200, 200)):
+        """
+        Resize an image to a standard size.
+
+        Parameters:
+        -----------
+        img_bytes : bytes
+            Image data in bytes format
+        target_size : tuple, optional
+            Target size (width, height)
+
+        Returns:
+        --------
+        numpy.ndarray
+            Resized image
+        """
+        try:
+            # Convert to PIL Image
+            try:
+                image_pil = Image.fromarray(img)
+            except Exception:
+                # If the image is not in a format that can be converted directly, use BytesIO
+                image_pil = Image.open(BytesIO(img))
+
+            # Resize the image
+            resized_image = image_pil.resize(
+                target_size, Image.Resampling.LANCZOS
+            )
+
+            # Convert to RGB if it's not already
+            if resized_image.mode != "RGB":
+                resized_image = resized_image.convert("RGB")
+
+            # return img_byte_arr.getvalue()
+            return resized_image
+        except Exception as e:
+            logger.error(f"Error resizing image: {e}")
+            return None
+
 
 def main():
     # Code profiling
@@ -487,8 +491,6 @@ def main():
     elapsed_time = et - st
     print("Execution time:", elapsed_time, "seconds")
 
-
-# %%
 
 if __name__ == "__main__":
     main()
