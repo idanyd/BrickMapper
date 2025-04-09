@@ -8,7 +8,86 @@ from PIL import Image
 import numpy as np
 from IPython.display import display, HTML
 import base64
+from concurrent.futures import ProcessPoolExecutor
 import logging
+
+logger = logging.getLogger(__name__)
+
+
+def process_piece_worker(args):
+    """
+    Worker function to process a single piece.
+    Must be at module level for ProcessPoolExecutor to work.
+
+    Args:
+        args: tuple of (piece, resized_set_pieces)
+    """
+    piece, resized_set_pieces = args
+
+    # Convert piece image to PIL.Image and resize
+    piece_image = _resize_image(piece["img"])
+
+    # Compare with each render image
+    best_match = (None, -1)  # (element_id, similarity_score)
+    for element_id, render_imgs in resized_set_pieces.items():
+        for render_img in render_imgs:
+            # Skip if render image is None
+            if render_img is None:
+                continue
+
+            # Calculate similarity
+            score, _ = ssim(
+                np.array(piece_image),
+                np.array(render_img),
+                channel_axis=2,
+                full=True,
+            )
+            if score > best_match[1]:
+                best_match = (element_id, score)
+
+    return {
+        "piece": piece,
+        "element_id": best_match[0],
+        "similarity": best_match[1],
+    }
+
+
+def _resize_image(img, target_size=(200, 200)):
+    """
+    Resize an image to a standard size.
+
+    Parameters:
+    -----------
+    img_bytes : bytes
+        Image data in bytes format
+    target_size : tuple, optional
+        Target size (width, height)
+
+    Returns:
+    --------
+    numpy.ndarray
+        Resized image
+    """
+    try:
+        # Convert to PIL Image
+        try:
+            image_pil = Image.fromarray(img)
+        except Exception:
+            # If the image is not in a format that can be converted directly, use BytesIO
+            image_pil = Image.open(BytesIO(img))
+
+        # Resize the image
+        resized_image = image_pil.resize(target_size, Image.Resampling.LANCZOS)
+
+        # Convert to RGB if it's not already
+        if resized_image.mode != "RGB":
+            resized_image = resized_image.convert("RGB")
+
+        # return img_byte_arr.getvalue()
+        return resized_image
+    except Exception as e:
+        logger.error(f"Error resizing image: {e}")
+        return None
 
 
 class PieceMatcher:
@@ -26,8 +105,6 @@ class PieceMatcher:
         self.matched = {}  # Matching results
         self.unmatched = {}  # Unmatched results
 
-        self.logger = logging.getLogger(__name__)
-
     def load_step_pieces_from_directory(self, pieces_dir):
         """
         Load all step piece images from the specified directory.
@@ -37,12 +114,11 @@ class PieceMatcher:
         pieces_dir : Path or str
             Directory containing the step piece images
         """
-        pieces_dir = Path(pieces_dir)
 
         # Pattern to extract page, step, and piece numbers from filenames
         pattern = r"page_(\d+)_step_(\d+)_piece_(\d+)"
 
-        for file_path in pieces_dir.glob("*.png") or pieces_dir.glob("*.jpg"):
+        for file_path in pieces_dir.glob("*"):
             match = re.search(pattern, file_path.name)
             if match:
                 page_num = int(match.group(1))
@@ -53,7 +129,6 @@ class PieceMatcher:
                 img = cv2.imread(str(file_path))
                 if img is None:
                     continue
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
                 # Store the image and its metadata
                 self.step_pieces.append(
@@ -62,15 +137,14 @@ class PieceMatcher:
                         "page": page_num,
                         "step": step_num,
                         "piece": piece_num,
-                        "path": file_path,
                     }
                 )
 
-        self.logger.info(
+        logger.info(
             f"Loaded {len(self.step_pieces)} step pieces from {pieces_dir}"
         )
 
-    def load_set_pieces_from_directory(self, renders_dir):
+    def load_set_pieces_from_directory(self, set_pieces_dir):
         """
         Load all set piece render images from the specified directory.
 
@@ -79,9 +153,8 @@ class PieceMatcher:
         renders_dir : Path or str
             Directory containing the set piece render images
         """
-        renders_dir = Path(renders_dir)
 
-        for file_path in renders_dir.glob("*.png") or renders_dir.glob(
+        for file_path in set_pieces_dir.glob("*.png") or set_pieces_dir.glob(
             "*.jpg"
         ):
             # Extract element ID from filename
@@ -91,7 +164,6 @@ class PieceMatcher:
                 img = cv2.imread(str(file_path))
                 if img is None:
                     continue
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
                 # Store the image and its path
                 if element_id not in self.set_pieces:
@@ -101,8 +173,8 @@ class PieceMatcher:
                     {"image_data": img, "path": file_path}
                 )
 
-        self.logger.info(
-            f"Loaded {len(self.set_pieces)} set pieces from {renders_dir}"
+        logger.info(
+            f"Loaded {len(self.set_pieces)} set pieces from {set_pieces_dir}"
         )
 
     def add_set_pieces(self, set_pieces):
@@ -144,49 +216,10 @@ class PieceMatcher:
         str or None
             Element ID if found, None otherwise
         """
-        match = re.match(r"(\d+)_\d*\.(jp(e?)g|png)", filename)
+        match = re.match(r"(\d+)_\d_\d*\.(jp(e?)g|png)", filename)
         if match:
             return match.group(1)
         return None
-
-    def _resize_image(self, img_bytes, target_size=(200, 200)):
-        """
-        Resize an image to a standard size.
-
-        Parameters:
-        -----------
-        img_bytes : bytes
-            Image data in bytes format
-        target_size : tuple, optional
-            Target size (width, height)
-
-        Returns:
-        --------
-        numpy.ndarray
-            Resized image
-        """
-        try:
-            # Convert to PIL Image
-            image_pil = Image.open(BytesIO(img_bytes))
-
-            # Resize the image
-            resized_image = image_pil.resize(
-                target_size, Image.Resampling.LANCZOS
-            )
-
-            # Convert to RGB if it's not already
-            if resized_image.mode != "RGB":
-                resized_image = resized_image.convert("RGB")
-
-            # Convert back to bytes array
-            # img_byte_arr = BytesIO()
-            # resized_image.save(img_byte_arr, format="PNG")
-
-            # return img_byte_arr.getvalue()
-            return resized_image
-        except Exception as e:
-            self.logger.error(f"Error resizing image: {e}")
-            return None
 
     def _compare_images(self, img1, img2):
         """
@@ -209,7 +242,7 @@ class PieceMatcher:
         )
         return score
 
-    def match_pieces(self, similarity_threshold=0.6):
+    def match_pieces(self, similarity_threshold=0.6, n_workers=4):
         """
         Match step pieces to set pieces based on image similarity.
 
@@ -217,6 +250,8 @@ class PieceMatcher:
         -----------
         similarity_threshold : float, optional
             Minimum similarity score to consider a match (0.0 to 1.0)
+        n_workers : int, optional
+            Number of parallel workers to use
 
         Returns:
         --------
@@ -231,42 +266,39 @@ class PieceMatcher:
         resized_set_pieces = {}
         for element_id, render_imgs in self.set_pieces.items():
             resized_set_pieces[element_id] = [
-                self._resize_image(render_img["image_data"])
+                _resize_image(render_img["image_data"])
                 for render_img in render_imgs
                 if render_img["image_data"] is not None
             ]
 
-        # Process each piece image
-        for piece in self.step_pieces:
-            piece_image = self._resize_image(piece["img"])
+        # Prepare arguments for parallel processing
+        process_args = [
+            (piece, resized_set_pieces) for piece in self.step_pieces
+        ]
+
+        # Process pieces in parallel
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            results = list(executor.map(process_piece_worker, process_args))
+
+        # Process results and organize into matched/unmatched dictionaries
+        for result in results:
+            if result is None:
+                continue
+
+            piece = result["piece"]
+            element_id = result["element_id"]
+            similarity = result["similarity"]
             page_num = piece["page"]
             step_num = piece["step"]
             piece_num = piece["piece"]
 
-            if piece_image is None:
-                continue
-
-            # Compare with each render image
-            best_match = (None, -1)  # (element_id, similarity_score)
-            for element_id, render_imgs in resized_set_pieces.items():
-                for render_img in render_imgs:
-                    # Skip if render image is None
-                    if render_img is None:
-                        continue
-
-                    # Calculate similarity
-                    similarity = self._compare_images(piece_image, render_img)
-                    if similarity > best_match[1]:
-                        best_match = (element_id, similarity)
-
             # Choose the appropriate dictionary based on the similarity score
             d = (
                 self.matched
-                if best_match[1] > similarity_threshold
+                if similarity > similarity_threshold
                 else self.unmatched
             )
 
-            element_id = best_match[0]
             if element_id not in d:
                 d[element_id] = {}
             if page_num not in d[element_id]:
@@ -276,15 +308,19 @@ class PieceMatcher:
                 {
                     "step": step_num,
                     "piece": piece_num,
-                    "similarity": best_match[1],
+                    "similarity": similarity,
                 }
             )
 
         return self.matched, self.unmatched
 
-    def _resize_image_for_display(self, img_bytes, max_size=(100, 100)):
+    def _resize_image_for_display(self, img, max_size=(100, 100)):
         """Resize image and convert to base64 for HTML display"""
-        img_pil = Image.open(BytesIO(img_bytes))
+        try:
+            img_pil = Image.fromarray(img)
+        except Exception:
+            # If the image is not in a format that can be converted directly, use BytesIO
+            img_pil = Image.open(BytesIO(img))
         img_pil.thumbnail(max_size)
         img_bio = BytesIO()
         img_pil.save(img_bio, format="PNG")
@@ -303,7 +339,7 @@ class PieceMatcher:
         """
         d = self.unmatched if compare_unmatched else self.matched
         if not d:
-            self.logger.info("No results found. Run match_pieces() first.")
+            logger.info("No results found. Run match_pieces() first.")
             return pd.DataFrame()
 
         # Create lists to store data for DataFrame
@@ -392,7 +428,7 @@ class PieceMatcher:
             df = self.create_comparison_dataframe(compare_unmatched)
 
         if df.empty:
-            self.logger.info("No data to display.")
+            logger.info("No data to display.")
             return df
 
         # Display the DataFrame with HTML rendering enabled
@@ -410,24 +446,49 @@ class PieceMatcher:
 
 
 def main():
-    """Example usage of the PieceMatcher class."""
-    pieces_dir = Path("data/processed_booklets/31147_2/pieces")
-    renders_dir = Path("data/processed_booklets/31147_3/piece_renders")
+    # Code profiling
+    from cProfile import Profile
+    from pstats import SortKey, Stats
+    import time
 
-    # Initialize the matcher
-    matcher = PieceMatcher()
+    st = time.time()
+    with Profile() as profile:
+        manual = "6236540"
+        """Example usage of the PieceMatcher class."""
+        step_pieces_dir = Path(f"data/processed_booklets/{manual}/step pieces")
+        set_pieces_dir = Path(
+            f"data/processed_booklets/{manual}/identified set pieces"
+        )
 
-    # Load pieces and renders
-    matcher.load_step_pieces_from_directory(pieces_dir)
-    matcher.load_set_pieces_from_directory(renders_dir)
+        # Initialize the matcher
+        matcher = PieceMatcher()
 
-    # Match pieces
-    matched, unmatched = matcher.match_pieces(similarity_threshold=0.6)
+        # Load pieces and renders
+        matcher.load_step_pieces_from_directory(step_pieces_dir)
+        matcher.load_set_pieces_from_directory(set_pieces_dir)
 
-    # Create and display comparison dataframe
-    df = matcher.create_comparison_dataframe()
-    matcher.display_comparison_dataframe(df)
+        # Match pieces
+        matched, unmatched = matcher.match_pieces(
+            similarity_threshold=0.6, n_workers=16
+        )
 
+        with open("stats.txt", "w") as file:
+            stats = (
+                Stats(profile, stream=file)
+                .strip_dirs()
+                .sort_stats(SortKey.CUMULATIVE)
+            )
+            stats.print_stats()
+
+        # Create and display comparison dataframe
+        df = matcher.create_comparison_dataframe()
+        matcher.display_comparison_dataframe(df)
+    et = time.time()
+    elapsed_time = et - st
+    print("Execution time:", elapsed_time, "seconds")
+
+
+# %%
 
 if __name__ == "__main__":
     main()

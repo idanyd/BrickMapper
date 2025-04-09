@@ -91,7 +91,7 @@ def extract_element_ids_and_positions(doc, page_numbers):
     element_ids = []
     column_boundaries = {}
 
-    for page_num in range(page_numbers['first'], page_numbers['last'] + 1):
+    for page_num in range(page_numbers["first"], page_numbers["last"] + 1):
         page = doc[page_num]
         blocks = page.get_text("dict")["blocks"]
 
@@ -147,7 +147,7 @@ def extract_element_ids_and_positions(doc, page_numbers):
 def extract_images_and_positions(doc, page_numbers, rejected_images_dir):
     images = []
 
-    for page_num in range(page_numbers['first'], page_numbers['last'] + 1):
+    for page_num in range(page_numbers["first"], page_numbers["last"] + 1):
         page = doc[page_num]
 
         # Get all images on the page
@@ -317,7 +317,7 @@ def match_element_ids_to_images(
 def extract_parts_list_from_pdf(
     doc,
     parts_list_pages,
-    set_pieces_dir=None,
+    identified_set_pieces_dir=None,
     parts_list_images_dir=None,
     rejected_images_dir=None,
 ):
@@ -334,14 +334,14 @@ def extract_parts_list_from_pdf(
     logger.info(f"Found {len(images)} images")
 
     if parts_list_images_dir:
-        # Save all extracted images, matched and unmatched alike
+        # Save all extracted images in the page before identifying
         logger.info(f"Saving all extracted images to {parts_list_images_dir}")
 
         save_images(parts_list_images_dir, images)
 
     logger.info("Matching element IDs to images...")
     matched, unmatched = match_element_ids_to_images(
-        element_ids, column_boundaries, images, set_pieces_dir
+        element_ids, column_boundaries, images, identified_set_pieces_dir
     )
 
     logger.info("Results:")
