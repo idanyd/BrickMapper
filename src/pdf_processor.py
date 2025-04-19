@@ -10,7 +10,6 @@ from utils.pdf_image_extractor import (
 )
 from utils.pdf_parts_list_extractor import extract_parts_list_from_pdf
 from piece_matcher import PieceMatcher
-import io
 import fitz
 from collections import Counter
 
@@ -29,23 +28,20 @@ class PDFProcessor:
         steps_path: Path = None,
     ) -> Dict[Any, Dict[Any, List[Dict]]]:
         """Process a single PDF manual and extract steps."""
-
         try:
             all_step_pieces = []
             total_steps = 0
             detector = StepDetector(doc)
 
+            if page_images_path:
+                self.logger.info(f"Saving all pages to {page_images_path}")
+
             for page_img in extract_pages_as_images_generator(doc):
                 img = page_img["image_data"]
                 page_num = page_img["page_num"]
-                if page_images_path:
-                    self.logger.info(f"Saving all pages to {page_images_path}")
-                    # Create output directory if it doesn't exist
-                    page_images_path.mkdir(parents=True, exist_ok=True)
-                    self._save_page_image(img, page_num, page_images_path)
 
-                page_step_pieces = []
-                # Process each detected step
+                self._handle_page_image(img, page_num, page_images_path)
+
                 try:
                     self.logger.info(f"Detecting steps for page {page_num}")
                     steps = detector.detect_steps(img, page_num - 1)
@@ -53,79 +49,83 @@ class PDFProcessor:
                     self.logger.error(f"Error detecting steps: {str(e)}")
                     return None
 
-                for step_number, step_info in steps.items():
-                    total_steps += 1
-                    if steps_path:
-                        # Extract and save step image
-                        step_image = self._extract_step_image(img, step_info)
-
-                        if steps_path and step_image and step_info.size:
-                            # Create output directory if it doesn't exist
-                            steps_path.mkdir(parents=True, exist_ok=True)
-                            # Save step image
-                            self._save_step_image(
-                                step_image,
-                                steps_path,
-                                page_num,
-                                step_number,
-                            )
-                    # Extract all piece images from the step box if possible
-                    step_piece_images = self._extract_step_pieces(
-                        doc, page_num - 1, step_info
-                    )
-                    if step_piece_images and step_info.size:
-                        page_step_pieces = [
-                            {
-                                "img": piece_img,
-                                "page": page_num,
-                                "step": step_number,
-                                "piece": i,
-                            }
-                            for i, piece_img in enumerate(step_piece_images)
-                        ]
-
-                        # Add to list of all step pieces
-                        all_step_pieces.extend(page_step_pieces)
-
-                        # Save piece images
-                        if step_pieces_path:
-                            image_paths = []
-                            # Create output directory if it doesn't exist
-                            step_pieces_path.mkdir(parents=True, exist_ok=True)
-                            for i, piece in enumerate(page_step_pieces):
-                                img = Image.open(io.BytesIO(piece["img"]))
-                                image_paths.append(
-                                    str(
-                                        self._save_piece_image(
-                                            img,
-                                            step_pieces_path,
-                                            page_num,
-                                            step_number,
-                                            i,
-                                        )
-                                    )
-                                )
-
-                    else:
-                        # Couldn't find distinct piece images, so process the entire step image
-                        step_image = self._extract_step_image(img, step_info)
-
-                        if steps_path and step_image and step_info.size:
-                            # Create output directory if it doesn't exist
-                            steps_path.mkdir(parents=True, exist_ok=True)
-                            # Save step image
-                            self._save_step_image(
-                                step_image,
-                                steps_path,
-                                page_num,
-                                step_number,
-                            )
+                page_step_pieces, step_count = self._process_steps_on_page(
+                    doc, img, page_num, steps, step_pieces_path, steps_path
+                )
+                all_step_pieces.extend(page_step_pieces)
+                total_steps += step_count
 
             return all_step_pieces, total_steps
 
         except Exception as e:
             self.logger.error(f"Error processing PDF: {e}")
             raise e
+
+    def _handle_page_image(self, img, page_num, page_images_path):
+        if page_images_path:
+            page_images_path.mkdir(parents=True, exist_ok=True)
+            self._save_page_image(img, page_num, page_images_path)
+
+    def _process_steps_on_page(
+        self, doc, img, page_num, steps, step_pieces_path, steps_path
+    ):
+        page_step_pieces = []
+        step_count = 0
+        for step_number, step_info in steps.items():
+            step_count += 1
+            self._handle_step_image(
+                img, step_info, steps_path, page_num, step_number
+            )
+
+            step_piece_images = self._extract_step_pieces(
+                doc, page_num - 1, step_info
+            )
+            if step_piece_images and step_info.size:
+                pieces = self._create_piece_dicts(
+                    step_piece_images, page_num, step_number
+                )
+                page_step_pieces.extend(pieces)
+                self._handle_piece_images(
+                    pieces, step_pieces_path, page_num, step_number
+                )
+            else:
+                self._handle_step_image(
+                    img, step_info, steps_path, page_num, step_number
+                )
+        return page_step_pieces, step_count
+
+    def _handle_step_image(
+        self, img, step_info, steps_path, page_num, step_number
+    ):
+        if steps_path:
+            step_image = self._extract_step_image(img, step_info)
+            if step_image and step_info.size:
+                steps_path.mkdir(parents=True, exist_ok=True)
+                self._save_step_image(
+                    step_image, steps_path, page_num, step_number
+                )
+
+    def _create_piece_dicts(self, step_piece_images, page_num, step_number):
+        return [
+            {
+                "img": piece_img,
+                "page": page_num,
+                "step": step_number,
+                "piece": i,
+            }
+            for i, piece_img in enumerate(step_piece_images)
+        ]
+
+    def _handle_piece_images(
+        self, pieces, step_pieces_path, page_num, step_number
+    ):
+        if step_pieces_path:
+            step_pieces_path.mkdir(parents=True, exist_ok=True)
+            for i, piece in enumerate(pieces):
+                img = Image.fromarray(piece["img"])
+                self._save_piece_image(
+                    img, step_pieces_path, page_num, step_number, i
+                )
 
     def _extract_step_pieces(self, doc: Path, page_num: int, step_info: Dict):
         """Extract renders of pieces from the step box."""
