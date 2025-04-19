@@ -5,10 +5,25 @@ import logging
 import csv
 from PIL import Image
 import io
+import numpy as np
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def is_complex_image(img_array):
+    """
+    Determine if an image is complex enough to be a LEGO piece render
+    rather than a simple bar or solid color.
+    """
+    # Get the first pixel value
+    first_pixel = img_array[0, 0]
+
+    # Compare all pixels to the first one
+    # This creates a boolean array where True means the pixel matches the first pixel
+    # all() returns True only if all elements are True
+    return np.any(img_array != first_pixel)
 
 
 def extract_pages_as_images(
@@ -133,7 +148,22 @@ def extract_pieces_from_step(doc, page_num, step_info):
         ):
             # Extract the image metadata after all the filtering
             base_image = doc.extract_image(xref)
-            images.append(base_image["image"])
+
+            # Get image bytes
+            image_bytes = base_image["image"]
+
+            # Convert to PIL Image
+            pil_image = Image.open(io.BytesIO(image_bytes))
+            if pil_image.mode != "RGB":
+                pil_image = pil_image.convert("RGB")
+            # Convert to numpy array
+            numpy_array = np.array(pil_image)
+
+            # skip images that have a single color
+            if not is_complex_image(numpy_array):
+                continue
+
+            images.append(numpy_array)
 
     return images
 
