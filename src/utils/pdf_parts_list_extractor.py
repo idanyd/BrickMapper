@@ -4,55 +4,51 @@ import numpy as np
 import io
 
 import logging
-from utils.logger import setup_logging
 
 logger = logging.getLogger(__name__)
 
 
-def save_images(output_dir, images):
+def save_images(output_dir, images, filename_format="{xref}.{ext}"):
+    """
+    Save multiple images with dynamically formatted filenames.
+
+    Args:
+        output_dir: Directory to save the images in (default: current directory)
+        images: List of dictionaries, each containing data for one image
+        filename_format: A string format for the filenames (uses keys from each image dict)
+
+    Returns:
+        List of saved filenames
+    """
     # Create output directory if it doesn't exist
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    saved_filenames = []
+
     for img in images:
-        filename = f"{img['xref']}.{img['ext']}"
-        with open(output_dir / filename, "wb") as f:
-            f.write(img["image_data"])
+        try:
+            filename = filename_format.format(**img)
+            img = Image.fromarray(img["image_data"])
+            img.save(output_dir / filename)
+
+            saved_filenames.append(filename)
+        except KeyError as e:
+            logger.error(f"Key error in filename formatting: {e}")
+
+    return saved_filenames
 
 
-def is_complex_image(image_data):
+def is_complex_image(img_array):
     """
     Determine if an image is complex enough to be a LEGO piece render
     rather than a simple bar or solid color.
     """
+    # Get the first pixel value
+    first_pixel = img_array[0, 0]
 
-    # Load the image using PIL
-    img = Image.open(io.BytesIO(image_data))
-
-    # Convert to RGB if needed
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-
-    # Convert to numpy array for analysis
-    img_array = np.array(img)
-
-    # Calculate image statistics
-
-    # 1. Check color variance - single color bars will have very low variance
-    r_var = np.var(img_array[:, :, 0])
-    g_var = np.var(img_array[:, :, 1])
-    b_var = np.var(img_array[:, :, 2])
-    total_variance = r_var + g_var + b_var
-
-    # 3. Check unique colors - LEGO pieces typically have many colors
-    unique_colors = np.unique(img_array, axis=0).shape[0]
-
-    # Determine if this is a complex image based on our metrics
-    is_complex = (
-        total_variance > 200  # Has color variation
-        and unique_colors > 3  # Has a reasonable number of colors
-    )
-
-    return is_complex
+    # Compare all pixels to the first one
+    # If any pixel is different from the first one, it's complex
+    return np.any(img_array != first_pixel)
 
 
 def extract_element_ids_and_positions_impl(
@@ -159,6 +155,16 @@ def extract_images_and_positions(doc, page_numbers, rejected_images_dir):
                 # Skip small images
                 continue
 
+            # Get image bytes
+            image_bytes = base_image["image"]
+
+            # Convert to PIL Image
+            pil_image = Image.open(io.BytesIO(image_bytes))
+            if pil_image.mode != "RGB":
+                pil_image = pil_image.convert("RGB")
+            # Convert to numpy array
+            numpy_array = np.array(pil_image)
+
             # Get the image rectangle (bbox) from the page
             bbox = None
             for rect in page.get_image_rects(xref):
@@ -167,10 +173,10 @@ def extract_images_and_positions(doc, page_numbers, rejected_images_dir):
                 break
 
             # Only add images we can locate on the page that aren't solid-color bars
-            if bbox and is_complex_image(base_image["image"]):
+            if bbox and is_complex_image(numpy_array):
                 images.append(
                     {
-                        "image_data": base_image["image"],
+                        "image_data": numpy_array,
                         "ext": base_image["ext"],
                         "bbox": bbox,
                         "page": page_num,
@@ -187,7 +193,7 @@ def extract_images_and_positions(doc, page_numbers, rejected_images_dir):
                         rejected_images_dir,
                         [
                             {
-                                "image_data": base_image["image"],
+                                "image_data": numpy_array,
                                 "ext": base_image["ext"],
                                 "xref": xref,
                             }
@@ -295,22 +301,23 @@ def match_element_ids_to_images(
     )
 
     if output_dir:
-        # Only save unmatched images if the output directory is provided
+        # Only save the images if the output directory is provided
 
-        # Create output directory if it doesn't exist
+        # Create the output directory if it doesn't exist
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        for image in unmatched_images:
-            filename = f"unmatched_P{image['page']}_y{image['bbox'][1]}_xref{image['xref']}.{image['ext']}"
-            with open(output_dir / filename, "wb") as f:
-                f.write(image["image_data"])
-
+        # Save matched images
         for element_id, images in matches.items():
             for i, image in enumerate(images):
                 # Save the image
                 filename = f"{element_id}_{i}_{image["xref"]}.{image['ext']}"
-                with open(output_dir / filename, "wb") as f:
-                    f.write(image["image_data"])
+                img = Image.fromarray(image["image_data"])
+                img.save(output_dir / filename)
+
+        # Save unmatched images
+        format = "unmatched_P{page}_y{bbox[1]}_xref{xref}.{ext}"
+        save_images(output_dir, unmatched_images, filename_format=format)
+
     return matches, unmatched_images
 
 
@@ -353,18 +360,19 @@ def extract_parts_list_from_pdf(
 
 def main():
     import fitz
+    from logger import setup_logging
 
     setup_logging(logging.INFO)
     # Test the code
-    manual = "6497660"
-    set_num = "31147"
-    booklet_num = "3"
+    manual = "6285327"
+    set_num = "75957"
+    booklet_num = "1"
     pdf_path = Path(f"data/training/manuals/{manual}.pdf")
     doc = fitz.open(pdf_path)
     piece_renders_dir = Path(
         f"data/processed_booklets/{set_num}_{booklet_num}/piece_renders"
     )
-    page_numbers = [n for n in range(37, 39)]  # Pages 38-39 in the PDF
+    page_numbers = {"first": 81, "last": 82}  # Pages 82-83 in the PDF
 
     matched, unmatched = extract_parts_list_from_pdf(
         doc, page_numbers, piece_renders_dir
