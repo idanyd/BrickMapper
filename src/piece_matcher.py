@@ -8,14 +8,191 @@ from PIL import Image
 import numpy as np
 from IPython.display import display, HTML
 import base64
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import matplotlib.pyplot as plt
+from dataclasses import dataclass
+from typing import Dict, List, Optional, TypedDict
 
 logger = logging.getLogger(__name__)
 
 
-def _process_piece_two_pass(args):
+# Dataclasses for configuration parameters
+@dataclass
+class MatchingConfig:
+    """Configuration parameters for piece matching"""
+
+    quick_threshold: float
+    final_threshold: float
+    num_top_matches: int
+
+
+class HistogramMatch(TypedDict):
+    """Type definition for histogram matching results"""
+
+    element_id: str
+    set_piece_idx: int
+    score: float
+
+
+class MatchResult(TypedDict):
+    """Type definition for final matching results"""
+
+    piece: dict
+    element_id: str
+    final_similarity: float
+    hist_similarity: float
+
+
+def compare_histograms(
+    step_piece_hist: np.ndarray, set_piece_hist: np.ndarray
+) -> float:
+    """Compare two color histograms using correlation method"""
+    return cv2.compareHist(
+        step_piece_hist, set_piece_hist, method=cv2.HISTCMP_CORREL
+    )
+
+
+def find_best_histogram_matches(
+    piece_hist: np.ndarray, processed_set_pieces: Dict, config: MatchingConfig
+) -> tuple[List[HistogramMatch], Optional[HistogramMatch]]:
+    """
+    First pass: Compare color histograms and find best matches
+
+    Returns:
+        Tuple of (list of matches above threshold, best match regardless of threshold)
+    """
+    hist_scores = []
+    best_first_pass = None
+    best_hist_score = 0
+    logger.debug("Finding best histogram matches...")
+    for element_id, pieces in processed_set_pieces.items():
+        for set_piece_idx, set_piece_data in enumerate(pieces):
+            hist_score = compare_histograms(
+                piece_hist, set_piece_data["histogram"]
+            )
+
+            candidate = {
+                "element_id": element_id,
+                "set_piece_idx": set_piece_idx,
+                "score": hist_score,
+            }
+
+            if hist_score > config.quick_threshold:
+                hist_scores.append(candidate)
+
+            if hist_score > best_hist_score:
+                best_hist_score = hist_score
+                best_first_pass = candidate
+
+    return hist_scores, best_first_pass
+
+
+def calculate_ssim_score(
+    step_piece_img: np.ndarray, set_piece_img: np.ndarray
+) -> float:
+    """Calculate SSIM score between two images"""
+    ssim_score, _ = ssim(
+        step_piece_img, set_piece_img, channel_axis=2, full=True
+    )
+    return ssim_score
+
+
+def ssim_match_candidates(
+    resized_step_piece: np.ndarray,
+    candidates: List[dict],
+    processed_set_pieces: Dict,
+    final_threshold: float,
+    use_hist_score: bool = True,
+) -> tuple[List[dict], Optional[dict]]:
+    """
+    Calculate SSIM for a list of candidate matches.
+
+    Args:
+        resized_step_piece: The query image (already resized).
+        candidates: List of dicts, each with 'element_id', 'set_piece_idx', and optionally 'score'.
+        processed_set_pieces: Dict of all set pieces.
+        final_threshold: SSIM threshold for a match.
+        use_hist_score: If True, use candidate['score'] as hist_similarity; else set to 0.
+
+    Returns:
+        (matches_above_threshold, best_match)
+    """
+    logger.debug("Calculating SSIM for candidates...")
+
+    # Initialize lists to store results
+    ssim_scores = []
+    best_match = None
+    best_ssim_score = 0
+
+    for candidate in candidates:
+        element_id = candidate["element_id"]
+        set_piece_idx = candidate.get("set_piece_idx", 0)
+        set_piece_data = processed_set_pieces[element_id][set_piece_idx]
+        ssim_score = calculate_ssim_score(
+            resized_step_piece, set_piece_data["image"]
+        )
+
+        match_result = {
+            "element_id": element_id,
+            "final_similarity": ssim_score,
+            "hist_similarity": candidate["score"] if use_hist_score else 0,
+        }
+
+        if ssim_score > final_threshold:
+            ssim_scores.append(match_result)
+
+        if ssim_score > best_ssim_score:
+            best_ssim_score = ssim_score
+            best_match = match_result
+
+    return ssim_scores, best_match
+
+
+def find_best_ssim_matches(
+    resized_step_piece: np.ndarray,
+    top_hist_matches: List[HistogramMatch],
+    processed_set_pieces: Dict,
+    config: MatchingConfig,
+) -> tuple[List[dict], Optional[dict]]:
+    """
+    Second pass: Calculate SSIM for top histogram matches
+
+    Returns:
+        Tuple of (list of matches above threshold, best match regardless of threshold)
+    """
+    return ssim_match_candidates(
+        resized_step_piece,
+        top_hist_matches,
+        processed_set_pieces,
+        config.final_threshold,
+        use_hist_score=True,
+    )
+
+
+def fallback_ssim_matching(
+    resized_step_piece: np.ndarray,
+    processed_set_pieces: Dict,
+    config: MatchingConfig,
+) -> tuple[List[dict], Optional[dict]]:
+    """
+    Fallback: Run SSIM matching on all set pieces when no good matches are found
+    """
+    all_candidates = [
+        {"element_id": element_id, "set_piece_idx": idx, "score": 0}
+        for element_id, pieces in processed_set_pieces.items()
+        for idx in range(len(pieces))
+    ]
+    return ssim_match_candidates(
+        resized_step_piece,
+        all_candidates,
+        processed_set_pieces,
+        config.final_threshold,
+        use_hist_score=False,
+    )
+
+
+def _process_piece_two_pass(args: tuple) -> MatchResult:
     """
     Process a single piece using two-pass matching:
     1. Quick filtering using color histograms
@@ -29,97 +206,90 @@ def _process_piece_two_pass(args):
         num_top_matches,
     ) = args
 
-    # First pass: Compare color histograms
-    piece_hist = PieceMatcher.extract_color_histogram(piece["img"])
+    config = MatchingConfig(
+        quick_threshold=quick_threshold,
+        final_threshold=final_threshold,
+        num_top_matches=num_top_matches,
+    )
 
-    # Store histogram comparisons
-    hist_scores = []
-    best_first_pass = None
-    best_hist_score = 0
-
-    for element_id, renders in processed_set_pieces.items():
-        for render_idx, render_data in enumerate(renders):
-            # Compare histograms using correlation
-            hist_score = cv2.compareHist(
-                piece_hist,
-                render_data["histogram"],  # Pre-computed histogram
-                method=cv2.HISTCMP_CORREL,
-            )
-
-            candidate = {
-                "element_id": element_id,
-                "render_idx": render_idx,
-                "score": hist_score,
-            }
-            # Store candidates that pass the quick threshold
-            if hist_score > quick_threshold:
-                hist_scores.append(candidate)
-            # Store the best histogram match for later comparison
-            if hist_score > best_hist_score:
-                best_hist_score = hist_score
-                best_first_pass = candidate
-
-    if not hist_scores:
-        # No matches found in the first passץ Return the best histogram match
-        # even if it doesn't pass the quick threshold
-        return {
-            "piece": piece,
-            "element_id": best_first_pass["element_id"],
-            "final_similarity": 0,  # Failed quick threshold
-            "hist_similarity": best_first_pass["score"],
-        }
-
-    # Sort by histogram similarity and get top matches
-    hist_scores.sort(key=lambda x: x["score"], reverse=True)
-    top_matches = hist_scores[:num_top_matches]
-
-    # Second pass: Calculate SSIM for top matches
-    ssim_scores = []
-    best_second_pass = None
-    best_ssim_score = 0
-    for match in top_matches:
-        render_data = processed_set_pieces[match["element_id"]][
-            match["render_idx"]
-        ]
-
-        # Calculate SSIM
-        ssim_score, _ = ssim(
-            PieceMatcher._resize_image(piece["img"]),
-            render_data["image"],
-            channel_axis=2,
-            full=True,
+    logger.debug(
+        f"Processing piece: {piece["piece"]}, Page: {piece["page"]}, Step: {piece["step"]}"
+    )
+    try:
+        # First pass: Compare color histograms
+        piece_hist = PieceMatcher.extract_color_histogram(piece["img"])
+        hist_scores, best_first_pass = find_best_histogram_matches(
+            piece_hist, processed_set_pieces, config
         )
 
-        candidate = {
-            "element_id": match["element_id"],
-            "final_similarity": ssim_score,
-            "hist_similarity": match["score"],
+        if not hist_scores:
+            logger.debug(
+                f"No histogram matches found above threshold {config.quick_threshold}"
+            )
+            return {
+                "piece": piece,
+                "element_id": best_first_pass["element_id"],
+                "final_similarity": 0,
+                "hist_similarity": best_first_pass["score"],
+            }
+
+        # Sort and get top histogram matches
+        hist_scores.sort(key=lambda x: x["score"], reverse=True)
+        top_matches = hist_scores[: config.num_top_matches]
+
+        # Second pass: Calculate SSIM for top matches
+        logger.debug(
+            f"Found {len(top_matches)} histogram matches, running SSIM on top matches..."
+        )
+        resized_piece = PieceMatcher._resize_image(piece["img"])
+        ssim_scores, best_second_pass = find_best_ssim_matches(
+            resized_piece, top_matches, processed_set_pieces, config
+        )
+
+        # If no good matches found, try fallback matching
+        if not ssim_scores:
+            logger.debug(
+                f"No matches found for {piece['piece']} in step {piece['step']} "
+                f"on page {piece['page']}. Running SSIM on all set pieces."
+            )
+            ssim_scores, best_second_pass = fallback_ssim_matching(
+                resized_piece, processed_set_pieces, config
+            )
+
+        if not ssim_scores:
+            logger.debug(
+                f"No matches found for {piece['piece']} in step {piece['step']} "
+                f"on page {piece['page']} after fallback SSIM."
+            )
+        else:
+            logger.debug(
+                f"Found {len(ssim_scores)} SSIM matches above threshold {config.final_threshold}"
+            )
+
+        # Return best match
+        best_match = (
+            best_second_pass
+            if not ssim_scores
+            else max(ssim_scores, key=lambda x: x["final_similarity"])
+        )
+
+        logger.debug(
+            f"Best match for piece {piece['piece']} in step {piece['step']} on page {piece['page']}: "
+            f"Element ID: {best_match['element_id']}, SSIM: {best_match['final_similarity']:.3f}"
+        )
+        return {
+            "piece": piece,
+            "element_id": best_match["element_id"],
+            "final_similarity": best_match["final_similarity"],
+            "hist_similarity": best_match["hist_similarity"],
         }
-        # Store candidates that pass the final threshold
-        if ssim_score > final_threshold:
-            ssim_scores.append(candidate)
-        # Store the best SSIM match for later comparison
-        if ssim_score > best_ssim_score:
-            best_ssim_score = ssim_score
-            best_second_pass = candidate
 
-    # If no matches pass the final threshold, return the best SSIM score
-    # Else, return the best match that passed both thresholds
-
-    best_match = (
-        best_second_pass
-        if not ssim_scores
-        else max(ssim_scores, key=lambda x: x["final_similarity"])
-    )
-    return {
-        "piece": piece,
-        "element_id": best_match["element_id"],
-        "final_similarity": best_match["final_similarity"],
-        "hist_similarity": best_match["hist_similarity"],
-    }
+    except Exception as e:
+        logger.error(f"Error during two pass processing: {e}", exc_info=True)
+        raise
 
 
-def _remove_background_simple(img, tolerance=20, debug=False):
+def _remove_background(img, tolerance=20, debug=False):
     """
     Remove the background from an image by identifying the background color
     from the top-left pixel and replacing all pixels of that color with white.
@@ -191,8 +361,8 @@ class PieceMatcher:
         self.set_pieces = (
             {}
         )  # Format: {element_id: [{"image_data": img_array, "path": path}]}
-        self.matched = {}  # Matching results
-        self.unmatched = {}  # Unmatched results
+        self.matched_step_pieces = {}  # Matching results
+        self.unmatched_step_pieces = {}  # Unmatched results
 
     def load_step_pieces_from_directory(self, pieces_dir):
         """
@@ -239,13 +409,11 @@ class PieceMatcher:
 
         Parameters:
         -----------
-        renders_dir : Path or str
+        set_pieces_dir : Path or str
             Directory containing the set piece render images
         """
 
-        for file_path in set_pieces_dir.glob("*.png") or set_pieces_dir.glob(
-            "*.jpg"
-        ):
+        for file_path in set_pieces_dir.glob("*"):
             # Extract element ID from filename
             element_id = self._get_element_id(file_path.name)
             if element_id:
@@ -293,7 +461,7 @@ class PieceMatcher:
 
     def _get_element_id(self, filename):
         """
-        Extract element ID from piece_renders filename.
+        Extract element ID from set_pieces filename.
 
         Parameters:
         -----------
@@ -315,30 +483,34 @@ class PieceMatcher:
         hist_threshold=0.9,
         similarity_threshold=0.6,
         n_workers=4,
-        num_top_matches=15,
+        num_top_matches=10,
     ):
         """
         Match step pieces to set pieces using color histograms and SSIM.
         """
+        logger.debug(
+            f"Matching pieces with hist_threshold={hist_threshold}, "
+            f"similarity_threshold={similarity_threshold}, n_workers={n_workers}"
+        )
         # Reset results
-        self.matched = {}
-        self.unmatched = {}
+        self.matched_step_pieces = {}
+        self.unmatched_step_pieces = {}
 
         # Pre-process set pieces (compute histograms)
         processed_set_pieces = {}
-        for element_id, renders in self.set_pieces.items():
+        for element_id, pieces in self.set_pieces.items():
             processed_set_pieces[element_id] = []
-            for render in renders:
-                hist = self.extract_color_histogram(render["image_data"])
+            for piece in pieces:
+                hist = self.extract_color_histogram(piece["image_data"])
                 processed_set_pieces[element_id].append(
                     {
-                        "image": self._resize_image(render["image_data"]),
+                        "image": self._resize_image(piece["image_data"]),
                         "histogram": hist,
                     }
                 )
 
         # Process pieces in parallel
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
             futures = []
             for piece in self.step_pieces:
                 args = (
@@ -364,9 +536,9 @@ class PieceMatcher:
 
                     # Choose the appropriate dictionary based on the similarity score
                     d = (
-                        self.matched
+                        self.matched_step_pieces
                         if similarity > similarity_threshold
-                        else self.unmatched
+                        else self.unmatched_step_pieces
                     )
 
                     if element_id not in d:
@@ -383,9 +555,20 @@ class PieceMatcher:
                         }
                     )
                 except Exception as e:
-                    print(f"Error processing piece: {e}")
+                    logger.error(f"Error processing piece: {e}")
 
-        return self.matched, self.unmatched
+        # Mark each set piece as matched or unmatched based on the results
+        for element_id, pieces in self.set_pieces.items():
+            if element_id not in self.matched_step_pieces:
+                # If the element ID is not in matched_step_pieces, mark all as unmatched
+                for piece in pieces:
+                    piece["matched"] = False
+            else:
+                # If the element ID is in matched_step_pieces, mark as matched
+                for piece in pieces:
+                    piece["matched"] = True
+
+        return self.matched_step_pieces, self.unmatched_step_pieces
 
     def _resize_image_for_display(self, img, max_size=(100, 100)):
         """Resize image and convert to base64 for HTML display"""
@@ -410,7 +593,11 @@ class PieceMatcher:
         pd.DataFrame
             DataFrame with comparison data and embedded images
         """
-        d = self.unmatched if compare_unmatched else self.matched
+        d = (
+            self.unmatched_step_pieces
+            if compare_unmatched
+            else self.matched_step_pieces
+        )
         if not d:
             logger.info("No results found. Run match_pieces() first.")
             return pd.DataFrame()
@@ -419,17 +606,14 @@ class PieceMatcher:
         data_rows = []
 
         for element_id, pages in d.items():
-            # Find the corresponding render image
+            # Find the corresponding set image
             if element_id not in self.set_pieces:
                 continue
 
-            render_data = self.set_pieces[element_id][
+            set_piece_data = self.set_pieces[element_id][
                 0
             ]  # Use the first render image
-            render_img = render_data["image_data"]
-            render_path = (
-                render_data["path"] if "path" in render_data else None
-            )
+            set_piece_img = set_piece_data["image_data"]
 
             for page_num, steps_data in pages.items():
                 for step_info in steps_data:
@@ -439,27 +623,47 @@ class PieceMatcher:
                     piece_num = step_info["piece"]
 
                     # Find the corresponding piece image
-                    piece_data = None
+                    step_piece_data = None
                     for piece in self.step_pieces:
                         if (
                             piece["page"] == page_num
                             and piece["step"] == step_num
                             and piece["piece"] == piece_num
                         ):
-                            piece_data = piece
+                            step_piece_data = piece
                             break
 
-                    if piece_data is None:
+                    if step_piece_data is None:
                         continue
 
-                    piece_img = piece_data["img"]
-                    piece_path = (
-                        piece_data["path"] if "path" in piece_data else None
-                    )
+                    step_piece_img = step_piece_data["img"]
 
                     # Create HTML for images
-                    piece_html = self._resize_image_for_display(piece_img)
-                    render_html = self._resize_image_for_display(render_img)
+                    step_piece_html = self._resize_image_for_display(
+                        step_piece_img
+                    )
+                    set_piece_html = self._resize_image_for_display(
+                        set_piece_img
+                    )
+
+                    # Extract and visualize color histograms
+                    step_piece_hist = PieceMatcher.extract_color_histogram(
+                        step_piece_img
+                    )
+                    set_piece_hist = PieceMatcher.extract_color_histogram(
+                        set_piece_img
+                    )
+
+                    step_piece_hist_html = (
+                        PieceMatcher.create_histogram_visualization(
+                            step_piece_hist
+                        )
+                    )
+                    set_piece_hist_html = (
+                        PieceMatcher.create_histogram_visualization(
+                            set_piece_hist
+                        )
+                    )
 
                     # Add row to data
                     data_rows.append(
@@ -467,16 +671,12 @@ class PieceMatcher:
                             "Element ID": element_id,
                             "Page": page_num,
                             "Step": step_num,
-                            "Piece Image": piece_html,
-                            "Render Image": render_html,
+                            "Step Piece Image": step_piece_html,
+                            "Set Piece Image": set_piece_html,
                             "Similarity Score": f"{similarity:.3f}",
+                            "Step Piece Histogram": step_piece_hist_html,
+                            "Set Piece Histogram": set_piece_hist_html,
                             "Histogram Similarity": f"{histogram_similarity:.3f}",
-                            "Piece Filename": (
-                                piece_path.name if piece_path else ""
-                            ),
-                            "Render Filename": (
-                                render_path.name if render_path else ""
-                            ),
                         }
                     )
 
@@ -514,8 +714,8 @@ class PieceMatcher:
         clean_df = df.copy()
         if "Piece Image" in clean_df.columns:
             clean_df["Piece Image"] = "[IMAGE]"
-        if "Render Image" in clean_df.columns:
-            clean_df["Render Image"] = "[IMAGE]"
+        if "Set Image" in clean_df.columns:
+            clean_df["Set Image"] = "[IMAGE]"
 
         return clean_df
 
@@ -583,6 +783,7 @@ class PieceMatcher:
         numpy.ndarray
             Resized image
         """
+        logger.info("Resizing image...")
         try:
             # Convert to PIL Image
             try:
@@ -593,7 +794,7 @@ class PieceMatcher:
 
             # Resize the image
             resized_image = image_pil.resize(
-                target_size, Image.Resampling.LANCZOS
+                target_size, Image.Resampling.NEAREST
             )
 
             # Convert to RGB if it's not already
@@ -625,7 +826,7 @@ class PieceMatcher:
             Flattened histogram array
         """
         # Remove background
-        processed_img = _remove_background_simple(img)
+        processed_img = _remove_background(img, debug=False)
 
         # Calculate histogram for each channel
         hist = cv2.calcHist(
@@ -640,6 +841,147 @@ class PieceMatcher:
         hist = cv2.normalize(hist, hist).flatten()
         return hist
 
+    @staticmethod
+    def create_histogram_visualization(hist, bins=32):
+        """
+        Create a visualization of a color histogram.
+
+        Parameters:
+        ----
+        hist : numpy.ndarray
+            Flattened histogram array
+        bins : int
+            Number of bins per color channel
+
+        Returns:
+        ----
+        str
+            Base64-encoded image of the histogram visualization
+        """
+        # Reshape the flattened histogram back to 3D
+        hist_3d = hist.reshape(bins, bins, bins)
+
+        # Create RGB projections
+        r_proj = np.sum(hist_3d, axis=(1, 2))
+        g_proj = np.sum(hist_3d, axis=(0, 2))
+        b_proj = np.sum(hist_3d, axis=(0, 1))
+
+        # Normalize for visualization
+        r_proj = r_proj / np.max(r_proj) if np.max(r_proj) > 0 else r_proj
+        g_proj = g_proj / np.max(g_proj) if np.max(g_proj) > 0 else g_proj
+        b_proj = b_proj / np.max(b_proj) if np.max(b_proj) > 0 else b_proj
+
+        # Create the plot
+        fig, ax = plt.subplots(figsize=(4, 2))
+        x = np.arange(bins)
+
+        ax.bar(x, r_proj, color="r", alpha=0.5, width=1.0)
+        ax.bar(x, g_proj, color="g", alpha=0.5, width=1.0)
+        ax.bar(x, b_proj, color="b", alpha=0.5, width=1.0)
+
+        ax.set_xlim(0, bins)
+        ax.set_ylim(0, 1.1)
+        ax.set_title("RGB Color Distribution")
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        # Convert plot to base64 image
+        buf = BytesIO()
+        plt.tight_layout()
+        fig.savefig(buf, format="png", dpi=100)
+        plt.close(fig)
+
+        buf.seek(0)
+        img_str = base64.b64encode(buf.read()).decode("utf-8")
+        return f'<img src="data:image/png;base64,{img_str}"/>'
+
+    def display_set_pieces_summary(self):
+        """
+        Display a comprehensive summary of all set pieces, including:
+        - Element ID
+        - Set piece image
+        - Color histogram
+        - Match status
+        - Best match similarity (if matched)
+
+        Returns:
+        ----
+        pd.DataFrame
+            DataFrame containing the summary information
+        """
+        data_rows = []
+
+        for element_id, pieces in self.set_pieces.items():
+            # Get the first render image for this element
+            set_piece_data = pieces[0]
+            set_piece_img = set_piece_data["image_data"]
+
+            # Create HTML for the set piece image
+            set_piece_html = self._resize_image_for_display(set_piece_img)
+
+            # Extract and visualize color histogram
+            set_piece_hist = self.extract_color_histogram(set_piece_img)
+            set_piece_hist_html = self.create_histogram_visualization(
+                set_piece_hist
+            )
+
+            # Check if this element was matched in any step
+            best_similarity = 0.0
+            match_status = "Unmatched"
+
+            if element_id in self.matched_step_pieces:
+                match_status = "Matched"
+                # Find the best similarity score for this element
+                for page_matches in self.matched_step_pieces[
+                    element_id
+                ].values():
+                    for match in page_matches:
+                        best_similarity = max(
+                            best_similarity, float(match["similarity"])
+                        )
+
+            # Add row to data
+            data_rows.append(
+                {
+                    "Element ID": element_id,
+                    "Set Piece Image": set_piece_html,
+                    "Color Histogram": set_piece_hist_html,
+                    "Match Status": match_status,
+                    "Best Similarity": (
+                        f"{best_similarity:.3f}"
+                        if best_similarity > 0
+                        else "N/A"
+                    ),
+                }
+            )
+
+        # Create DataFrame
+        df = pd.DataFrame(data_rows)
+
+        # Sort by match status (Matched first) and then by similarity score
+        df = df.sort_values(
+            by=["Match Status", "Best Similarity"], ascending=[True, False]
+        )
+
+        # Display the DataFrame with HTML rendering enabled
+        display(HTML(df.to_html(escape=False)))
+
+        # Print summary statistics
+        total_pieces = len(df)
+        matched_pieces = len(df[df["Match Status"] == "Matched"])
+        unmatched_pieces = total_pieces - matched_pieces
+
+        print(f"\nSummary Statistics:")
+        print(f"Total Set Pieces: {total_pieces}")
+        print(
+            f"Matched Pieces: {matched_pieces} ({matched_pieces/total_pieces*100:.1f}%)"
+        )
+        print(
+            f"Unmatched Pieces: {unmatched_pieces} ({unmatched_pieces/total_pieces*100:.1f}%)"
+        )
+
+        return df
+
 
 def main():
     logging.basicConfig(level=logging.INFO)
@@ -651,7 +993,7 @@ def main():
 
     st = time.time()
     with Profile() as profile:
-        manual = "6236540"
+        manual = "6285327"
         """Example usage of the PieceMatcher class."""
         step_pieces_dir = Path(f"data/processed_booklets/{manual}/step pieces")
         set_pieces_dir = Path(
@@ -661,7 +1003,7 @@ def main():
         # Initialize the matcher
         matcher = PieceMatcher()
 
-        # Load pieces and renders
+        # Load step pieces and set pieces from directories
         matcher.load_step_pieces_from_directory(step_pieces_dir)
         matcher.load_set_pieces_from_directory(set_pieces_dir)
 
@@ -678,9 +1020,6 @@ def main():
             )
             stats.print_stats()
 
-        # Create and display comparison dataframe
-        # df = matcher.create_comparison_dataframe()
-        # matcher.display_comparison_dataframe(df)
     et = time.time()
     elapsed_time = et - st
     print("Execution time:", elapsed_time, "seconds")
