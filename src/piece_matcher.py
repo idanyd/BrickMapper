@@ -44,6 +44,66 @@ class MatchResult(TypedDict):
     hist_similarity: float
 
 
+def calculate_template_matching_score(
+    step_piece_img: np.ndarray, set_piece_img: np.ndarray
+) -> float:
+    """Calculate template matching score between two images"""
+    result = cv2.matchTemplate(
+        step_piece_img, set_piece_img, cv2.TM_CCOEFF_NORMED
+    )
+    _, max_val, _, _ = cv2.minMaxLoc(result)
+    return max_val
+
+
+def template_match_candidates(
+    resized_step_piece: np.ndarray,
+    candidates: List[dict],
+    processed_set_pieces: Dict,
+    final_threshold: float,
+    use_hist_score: bool = True,
+) -> tuple[List[dict], Optional[dict]]:
+    """
+    Calculate SSIM and template matching for a list of candidate matches.
+    """
+    logger.debug("Calculating SSIM and template matching for candidates...")
+
+    # Initialize lists to store results
+    scores = []
+    best_match = None
+    best_template_score = 0
+
+    for candidate in candidates:
+        element_id = candidate["element_id"]
+        set_piece_idx = candidate.get("set_piece_idx", 0)
+        set_piece_data = processed_set_pieces[element_id][set_piece_idx]
+
+        # Calculate both SSIM and template matching scores
+        ssim_score, ssim_image = calculate_ssim_score(
+            resized_step_piece, set_piece_data["image"]
+        )
+        template_score = calculate_template_matching_score(
+            resized_step_piece, set_piece_data["image"]
+        )
+
+        match_result = {
+            "element_id": element_id,
+            "ssim_score": ssim_score,
+            "template_similarity": template_score,
+            "hist_similarity": candidate["score"] if use_hist_score else 0,
+        }
+
+        # Use template matching score for threshold
+        if template_score > final_threshold:
+            scores.append(match_result)
+
+        # Update best match based on either score
+        if template_score > best_template_score:
+            best_template_score = max(best_template_score, template_score)
+            best_match = match_result
+
+    return scores, best_match
+
+
 def compare_histograms(
     step_piece_hist: np.ndarray, set_piece_hist: np.ndarray
 ) -> float:
@@ -92,64 +152,13 @@ def calculate_ssim_score(
     step_piece_img: np.ndarray, set_piece_img: np.ndarray
 ) -> float:
     """Calculate SSIM score between two images"""
-    ssim_score, _ = ssim(
-        step_piece_img, set_piece_img, channel_axis=2, full=True
+    ssim_score, ssim_image = ssim(
+        step_piece_img, set_piece_img, channel_axis=2, full=True, win_size=3
     )
-    return ssim_score
+    return ssim_score, ssim_image
 
 
-def ssim_match_candidates(
-    resized_step_piece: np.ndarray,
-    candidates: List[dict],
-    processed_set_pieces: Dict,
-    final_threshold: float,
-    use_hist_score: bool = True,
-) -> tuple[List[dict], Optional[dict]]:
-    """
-    Calculate SSIM for a list of candidate matches.
-
-    Args:
-        resized_step_piece: The query image (already resized).
-        candidates: List of dicts, each with 'element_id', 'set_piece_idx', and optionally 'score'.
-        processed_set_pieces: Dict of all set pieces.
-        final_threshold: SSIM threshold for a match.
-        use_hist_score: If True, use candidate['score'] as hist_similarity; else set to 0.
-
-    Returns:
-        (matches_above_threshold, best_match)
-    """
-    logger.debug("Calculating SSIM for candidates...")
-
-    # Initialize lists to store results
-    ssim_scores = []
-    best_match = None
-    best_ssim_score = 0
-
-    for candidate in candidates:
-        element_id = candidate["element_id"]
-        set_piece_idx = candidate.get("set_piece_idx", 0)
-        set_piece_data = processed_set_pieces[element_id][set_piece_idx]
-        ssim_score = calculate_ssim_score(
-            resized_step_piece, set_piece_data["image"]
-        )
-
-        match_result = {
-            "element_id": element_id,
-            "final_similarity": ssim_score,
-            "hist_similarity": candidate["score"] if use_hist_score else 0,
-        }
-
-        if ssim_score > final_threshold:
-            ssim_scores.append(match_result)
-
-        if ssim_score > best_ssim_score:
-            best_ssim_score = ssim_score
-            best_match = match_result
-
-    return ssim_scores, best_match
-
-
-def find_best_ssim_matches(
+def find_best_template_matches(
     resized_step_piece: np.ndarray,
     top_hist_matches: List[HistogramMatch],
     processed_set_pieces: Dict,
@@ -161,7 +170,7 @@ def find_best_ssim_matches(
     Returns:
         Tuple of (list of matches above threshold, best match regardless of threshold)
     """
-    return ssim_match_candidates(
+    return template_match_candidates(
         resized_step_piece,
         top_hist_matches,
         processed_set_pieces,
@@ -170,7 +179,7 @@ def find_best_ssim_matches(
     )
 
 
-def fallback_ssim_matching(
+def fallback_template_matching(
     resized_step_piece: np.ndarray,
     processed_set_pieces: Dict,
     config: MatchingConfig,
@@ -183,7 +192,7 @@ def fallback_ssim_matching(
         for element_id, pieces in processed_set_pieces.items()
         for idx in range(len(pieces))
     ]
-    return ssim_match_candidates(
+    return template_match_candidates(
         resized_step_piece,
         all_candidates,
         processed_set_pieces,
@@ -229,7 +238,8 @@ def _process_piece_two_pass(args: tuple) -> MatchResult:
             return {
                 "piece": piece,
                 "element_id": best_first_pass["element_id"],
-                "final_similarity": 0,
+                "ssim_score": 0,
+                "template_similarity": 0,
                 "hist_similarity": best_first_pass["score"],
             }
 
@@ -242,45 +252,46 @@ def _process_piece_two_pass(args: tuple) -> MatchResult:
             f"Found {len(top_matches)} histogram matches, running SSIM on top matches..."
         )
         resized_piece = PieceMatcher._resize_image(piece["img"])
-        ssim_scores, best_second_pass = find_best_ssim_matches(
+        template_scores, best_second_pass = find_best_template_matches(
             resized_piece, top_matches, processed_set_pieces, config
         )
 
         # If no good matches found, try fallback matching
-        if not ssim_scores:
+        if not template_scores:
             logger.debug(
                 f"No matches found for {piece['piece']} in step {piece['step']} "
                 f"on page {piece['page']}. Running SSIM on all set pieces."
             )
-            ssim_scores, best_second_pass = fallback_ssim_matching(
+            template_scores, best_second_pass = fallback_template_matching(
                 resized_piece, processed_set_pieces, config
             )
 
-        if not ssim_scores:
+        if not template_scores:
             logger.debug(
                 f"No matches found for {piece['piece']} in step {piece['step']} "
-                f"on page {piece['page']} after fallback SSIM."
+                f"on page {piece['page']} after fallback template matching."
             )
         else:
             logger.debug(
-                f"Found {len(ssim_scores)} SSIM matches above threshold {config.final_threshold}"
+                f"Found {len(template_scores)} template matches above threshold {config.final_threshold}"
             )
 
         # Return best match
         best_match = (
             best_second_pass
-            if not ssim_scores
-            else max(ssim_scores, key=lambda x: x["final_similarity"])
+            if not template_scores
+            else max(template_scores, key=lambda x: x["ssim_score"])
         )
 
         logger.debug(
             f"Best match for piece {piece['piece']} in step {piece['step']} on page {piece['page']}: "
-            f"Element ID: {best_match['element_id']}, SSIM: {best_match['final_similarity']:.3f}"
+            f"Element ID: {best_match['element_id']}, template matching score: {best_match['template_similarity']:.3f}"
         )
         return {
             "piece": piece,
             "element_id": best_match["element_id"],
-            "final_similarity": best_match["final_similarity"],
+            "ssim_score": best_match["ssim_score"],
+            "template_similarity": best_match["template_similarity"],
             "hist_similarity": best_match["hist_similarity"],
         }
 
@@ -481,7 +492,7 @@ class PieceMatcher:
     def match_pieces(
         self,
         hist_threshold=0.9,
-        similarity_threshold=0.6,
+        similarity_threshold=0.8,
         n_workers=4,
         num_top_matches=10,
     ):
@@ -529,7 +540,7 @@ class PieceMatcher:
 
                     piece = result["piece"]
                     element_id = result["element_id"]
-                    similarity = result["final_similarity"]
+                    template_similarity = result["template_similarity"]
                     page_num = piece["page"]
                     step_num = piece["step"]
                     piece_num = piece["piece"]
@@ -537,7 +548,7 @@ class PieceMatcher:
                     # Choose the appropriate dictionary based on the similarity score
                     d = (
                         self.matched_step_pieces
-                        if similarity > similarity_threshold
+                        if template_similarity > similarity_threshold
                         else self.unmatched_step_pieces
                     )
 
@@ -550,7 +561,8 @@ class PieceMatcher:
                         {
                             "step": step_num,
                             "piece": piece_num,
-                            "similarity": similarity,
+                            "SSIM similarity": result["ssim_score"],
+                            "template_similarity": template_similarity,
                             "hist_similarity": result["hist_similarity"],
                         }
                     )
@@ -618,8 +630,6 @@ class PieceMatcher:
             for page_num, steps_data in pages.items():
                 for step_info in steps_data:
                     step_num = step_info["step"]
-                    similarity = step_info["similarity"]
-                    histogram_similarity = step_info["hist_similarity"]
                     piece_num = step_info["piece"]
 
                     # Find the corresponding piece image
@@ -673,10 +683,11 @@ class PieceMatcher:
                             "Step": step_num,
                             "Step Piece Image": step_piece_html,
                             "Set Piece Image": set_piece_html,
-                            "Similarity Score": f"{similarity:.3f}",
+                            "SSIM Score": f"{step_info["SSIM similarity"]:.3f}",
+                            "Template Score": f"{step_info['template_similarity']:.3f}",  # Added
                             "Step Piece Histogram": step_piece_hist_html,
                             "Set Piece Histogram": set_piece_hist_html,
-                            "Histogram Similarity": f"{histogram_similarity:.3f}",
+                            "Histogram Similarity": f"{step_info["hist_similarity"]:.3f}",
                         }
                     )
 
@@ -740,9 +751,12 @@ class PieceMatcher:
                 continue
             summary[name] = [
                 df.shape[0],
-                df["Similarity Score"].astype(float).min(),
-                df["Similarity Score"].astype(float).max(),
-                f"{df["Similarity Score"].astype(float).mean():.3f}",
+                df["SSIM Score"].astype(float).min(),
+                df["SSIM Score"].astype(float).max(),
+                f"{df["SSIM Score"].astype(float).mean():.3f}",
+                df["Template Score"].astype(float).min(),
+                df["Template Score"].astype(float).max(),
+                f"{df["Template Score"].astype(float).mean():.3f}",
                 df["Histogram Similarity"].astype(float).min(),
                 df["Histogram Similarity"].astype(float).max(),
                 f"{df["Histogram Similarity"].astype(float).mean():.3f}",
@@ -757,6 +771,9 @@ class PieceMatcher:
                 "Min Similarity",
                 "Max Similarity",
                 "Mean Similarity",
+                "Min Template Score",
+                "Max Template Score",
+                "Mean Template Score",
                 "Min Histogram Similarity",
                 "Max Histogram Similarity",
                 "Mean Histogram Similarity",
@@ -783,7 +800,7 @@ class PieceMatcher:
         numpy.ndarray
             Resized image
         """
-        logger.info("Resizing image...")
+        logger.debug("Resizing image...")
         try:
             # Convert to PIL Image
             try:
@@ -926,7 +943,8 @@ class PieceMatcher:
             )
 
             # Check if this element was matched in any step
-            best_similarity = 0.0
+            best_ssim_similarity = 0.0
+            best_template_similarity = 0.0
             match_status = "Unmatched"
 
             if element_id in self.matched_step_pieces:
@@ -936,8 +954,13 @@ class PieceMatcher:
                     element_id
                 ].values():
                     for match in page_matches:
-                        best_similarity = max(
-                            best_similarity, float(match["similarity"])
+                        best_ssim_similarity = max(
+                            best_ssim_similarity,
+                            float(match["SSIM similarity"]),
+                        )
+                        best_template_similarity = max(
+                            best_template_similarity,
+                            float(match["template_similarity"]),
                         )
 
             # Add row to data
@@ -947,9 +970,14 @@ class PieceMatcher:
                     "Set Piece Image": set_piece_html,
                     "Color Histogram": set_piece_hist_html,
                     "Match Status": match_status,
-                    "Best Similarity": (
-                        f"{best_similarity:.3f}"
-                        if best_similarity > 0
+                    "Best SSIM Similarity": (
+                        f"{best_ssim_similarity:.3f}"
+                        if best_ssim_similarity > 0
+                        else "N/A"
+                    ),
+                    "Best Template Similarity": (
+                        f"{match['template_similarity']:.3f}"
+                        if best_template_similarity > 0
                         else "N/A"
                     ),
                 }
@@ -971,12 +999,12 @@ class PieceMatcher:
         matched_pieces = len(df[df["Match Status"] == "Matched"])
         unmatched_pieces = total_pieces - matched_pieces
 
-        print(f"\nSummary Statistics:")
-        print(f"Total Set Pieces: {total_pieces}")
-        print(
+        logger.info("Summary Statistics:")
+        logger.info(f"Total Set Pieces: {total_pieces}")
+        logger.info(
             f"Matched Pieces: {matched_pieces} ({matched_pieces/total_pieces*100:.1f}%)"
         )
-        print(
+        logger.info(
             f"Unmatched Pieces: {unmatched_pieces} ({unmatched_pieces/total_pieces*100:.1f}%)"
         )
 
