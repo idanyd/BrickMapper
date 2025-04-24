@@ -7,7 +7,7 @@ from PIL import Image
 import numpy as np
 from IPython.display import display, HTML
 import base64
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import logging
 from typing import Dict, List, TypedDict
 
@@ -78,7 +78,7 @@ def perform_template_matching(
     Run template matching on all set pieces for a given step piece.
     """
     all_candidates = [
-        {"element_id": element_id, "set_piece_idx": idx, "score": 0}
+        {"element_id": element_id, "set_piece_idx": idx}
         for element_id, pieces in resized_set_pieces.items()
         for idx in range(len(pieces))
     ]
@@ -100,10 +100,10 @@ def _process_piece(args: tuple) -> MatchResult:
     )
     try:
         # Perform template matching
-        resized_piece = PieceMatcher._resize_image(piece["img"])
+        resized_step_piece = PieceMatcher._resize_image(piece["img"])
 
         best_match = perform_template_matching(
-            resized_piece, resized_set_pieces
+            resized_step_piece, resized_set_pieces
         )
 
         logger.debug(
@@ -269,7 +269,8 @@ class PieceMatcher:
         }
 
         # Process pieces in parallel
-        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        #with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = []
             for piece in self.step_pieces:
                 args = (
@@ -625,12 +626,11 @@ def main():
 
     st = time.time()
     with Profile() as profile:
-        manual = "6285327"
+        manual = "6519906"
         """Example usage of the PieceMatcher class."""
-        step_pieces_dir = Path(f"data/processed_booklets/{manual}/step pieces")
-        set_pieces_dir = Path(
-            f"data/processed_booklets/{manual}/identified set pieces"
-        )
+        processed_manual_dir = Path(f"data/processed manuals/{manual}")
+        step_pieces_dir = processed_manual_dir / "step pieces"
+        set_pieces_dir = processed_manual_dir / "identified set pieces"
 
         # Initialize the matcher
         matcher = PieceMatcher()
