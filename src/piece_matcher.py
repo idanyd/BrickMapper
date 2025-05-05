@@ -1,5 +1,7 @@
-from pathlib import Path
+# import os
+
 import cv2
+from pathlib import Path
 import re
 import pandas as pd
 from io import BytesIO
@@ -7,9 +9,9 @@ from PIL import Image
 import numpy as np
 from IPython.display import display, HTML
 import base64
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 import logging
-from typing import Dict, List, TypedDict
+from typing import Dict, List, TypedDict, Union
 
 logger = logging.getLogger(__name__)
 
@@ -22,21 +24,57 @@ class MatchResult(TypedDict):
     similarity: float
 
 
+def calculate_template_matching_score_gpu(
+    gpu_step_piece: cv2.cuda_GpuMat, set_piece_gpu_mat: cv2.cuda_GpuMat
+) -> float:
+    """Calculate template matching score using GPU."""
+    try:
+        gpu_step_piece_float = gpu_step_piece
+        set_piece_gpu_float = set_piece_gpu_mat
+        # Verify GPU matrices
+        logger.debug(f"GPU step piece type: {gpu_step_piece_float.type()}")
+        logger.debug(f"GPU set piece type: {set_piece_gpu_float.type()}")
+        logger.debug(f"GPU step piece size: {gpu_step_piece_float.size()}")
+        logger.debug(f"GPU set piece size: {set_piece_gpu_float.size()}")
+        # Create matcher
+        matcher = cv2.cuda.createTemplateMatching(cv2.CV_32F, cv2.TM_SQDIFF)
+
+        # Perform matching with error checking
+        try:
+            gpu_result = matcher.match(gpu_step_piece, set_piece_gpu_mat)
+            result = gpu_result.download()
+            score = float(result.min())
+        except cv2.error as e:
+            logger.error(f"Template matching failed: {e}")
+            raise
+        finally:
+            # Clean up GPU resources
+            if "gpu_result" in locals():
+                gpu_result.release()
+
+        return score
+
+    except Exception as e:
+        logger.error(f"GPU template matching error: {e}")
+        raise
+
+
 def calculate_template_matching_score(
     step_piece_img: np.ndarray, set_piece_img: np.ndarray
 ) -> float:
     """Calculate template matching score between two images"""
     result = cv2.matchTemplate(
-        step_piece_img, set_piece_img, cv2.TM_CCOEFF_NORMED
+        step_piece_img, set_piece_img, cv2.TM_CCORR_NORMED
     )
-    _, max_val, _, _ = cv2.minMaxLoc(result)
+    min_val, max_val, _, _ = cv2.minMaxLoc(result)
     return max_val
 
 
 def template_match_candidates(
-    resized_step_piece: np.ndarray,
+    resized_step_piece: Union[np.ndarray, cv2.cuda_GpuMat],
     candidates: List[dict],
     resized_set_pieces: Dict,
+    cuda_available: bool,
 ) -> dict:
     """
     Calculate template matching for a list of candidate matches.
@@ -45,17 +83,24 @@ def template_match_candidates(
 
     # Initialize lists to store results
     best_match = None
-    best_template_score = 0
+    # best_template_score = float("inf")
+    best_template_score = 0.0
 
     for candidate in candidates:
         element_id = candidate["element_id"]
-        set_piece_idx = candidate.get("set_piece_idx", 0)
-        set_piece_data = resized_set_pieces[element_id][set_piece_idx]
 
-        # Calculate template matching scores
-        template_score = calculate_template_matching_score(
-            resized_step_piece, set_piece_data
-        )
+        if cuda_available:
+            # Use GPU matrices directly
+            template_score = calculate_template_matching_score_gpu(
+                resized_step_piece, candidate["gpu_mat"]
+            )
+        else:
+            set_piece_idx = candidate.get("set_piece_idx", 0)
+            set_piece_data = resized_set_pieces[element_id][set_piece_idx]
+            # Calculate template matching scores using CPU arrays
+            template_score = calculate_template_matching_score(
+                resized_step_piece, set_piece_data
+            )
 
         match_result = {
             "element_id": element_id,
@@ -71,21 +116,32 @@ def template_match_candidates(
 
 
 def perform_template_matching(
-    resized_step_piece: np.ndarray,
+    resized_step_piece: Union[np.ndarray, cv2.cuda.GpuMat],
     resized_set_pieces: Dict,
+    cuda_available: bool,
 ) -> dict:
     """
     Run template matching on all set pieces for a given step piece.
     """
-    all_candidates = [
-        {"element_id": element_id, "set_piece_idx": idx}
-        for element_id, pieces in resized_set_pieces.items()
-        for idx in range(len(pieces))
-    ]
+    if cuda_available:
+        # For GPU mode, resized_step_piece is a GpuMat
+        all_candidates = [
+            {
+                "element_id": element_id,
+                "set_piece_idx": idx,
+                "gpu_mat": gpu_mat,
+            }
+            for element_id, pieces in resized_set_pieces.items()
+            for idx, gpu_mat in enumerate(pieces)
+        ]
+    else:
+        all_candidates = [
+            {"element_id": element_id, "set_piece_idx": idx}
+            for element_id, pieces in resized_set_pieces.items()
+            for idx in range(len(pieces))
+        ]
     return template_match_candidates(
-        resized_step_piece,
-        all_candidates,
-        resized_set_pieces,
+        resized_step_piece, all_candidates, resized_set_pieces, cuda_available
     )
 
 
@@ -93,28 +149,44 @@ def _process_piece(args: tuple) -> MatchResult:
     """
     Process a single step piece using template matching.
     """
-    (piece, resized_set_pieces) = args
+    (piece, resized_set_pieces, cuda_available) = args
 
-    logger.debug(
-        f"Processing piece: {piece["piece"]}, Page: {piece["page"]}, Step: {piece["step"]}"
-    )
     try:
-        # Perform template matching
-        resized_step_piece = PieceMatcher._resize_image(piece["img"])
+        if cuda_available:
+            # For GPU mode, piece is a GpuMat, but we need the metadata
+            # Assuming piece is a dictionary with 'gpu_mat' and metadata
+            step_piece_gpu = piece["gpu_mat"]
 
-        best_match = perform_template_matching(
-            resized_step_piece, resized_set_pieces
-        )
+            best_match = perform_template_matching(
+                step_piece_gpu, resized_set_pieces, cuda_available
+            )
 
-        logger.debug(
-            f"Best match for piece {piece['piece']} in step {piece['step']} on page {piece['page']}: "
-            f"Element ID: {best_match['element_id']}, template matching score: {best_match['similarity']:.3f}"
-        )
-        return {
-            "piece": piece,
-            "element_id": best_match["element_id"],
-            "similarity": best_match["similarity"],
-        }
+            metadata = {
+                "page": piece["page"],
+                "step": piece["step"],
+                "piece": piece["piece"],
+            }
+
+            return {
+                "piece": metadata,
+                "element_id": best_match["element_id"],
+                "similarity": best_match["similarity"],
+            }
+        else:
+            # CPU mode - existing code
+            resized_step_piece = PieceMatcher._resize_image(
+                piece["img"], use_gpu=cuda_available
+            )
+
+            best_match = perform_template_matching(
+                resized_step_piece, resized_set_pieces, cuda_available
+            )
+
+            return {
+                "piece": piece,
+                "element_id": best_match["element_id"],
+                "similarity": best_match["similarity"],
+            }
 
     except Exception as e:
         logger.error(f"Error during piece processing: {e}", exc_info=True)
@@ -122,19 +194,45 @@ def _process_piece(args: tuple) -> MatchResult:
 
 
 class PieceMatcher:
-    """Class for matching LEGO pieces from instruction steps to set piece renders."""
+    """Class for matching LEGO pieces from instruction steps to set piece
+    renders."""
 
     def __init__(self):
         """Initialize the PieceMatcher class."""
+        # Check CUDA availability
+        # self.cuda_available = cv2.cuda.getCudaEnabledDeviceCount() > 0
+        self.cuda_available = False
+        try:
+            # Print OpenCV version and CUDA information
+            logger.info(f"OpenCV version: {cv2.__version__}")
+            logger.info(
+                f"CUDA device count: {cv2.cuda.getCudaEnabledDeviceCount()}"
+            )
+
+            # Set device before any other CUDA operations
+            cv2.cuda.setDevice(0)
+
+            # Warm up CUDA context
+            # cv2.cuda.resetDevice()
+
+        except Exception as e:
+            logger.warning(f"CUDA initialization failed: {e}")
         # Store pieces and renders in memory
-        self.step_pieces = (
-            []
-        )  # Format: [{"img": img_array, "page": page_num, "step": step_num, "piece": piece_num}]
+        # Format: [{"img": img_array, "page": page_num, "step": step_num, "piece": piece_num}]
+        self.step_pieces = []
         self.set_pieces = (
             {}
         )  # Format: {element_id: [{"image_data": img_array}]}
         self.matched_step_pieces = {}  # Matching results
         self.unmatched_step_pieces = {}  # Unmatched results
+
+        # GPU matrices for processed images
+        self.set_pieces_gpu = {}  # {element_id: [GpuMat, ...]}
+        self.step_pieces_gpu = []  # List of GpuMat objects
+
+    def __del__(self):
+        """Cleanup GPU resources"""
+        self._clear_gpu_matrices()
 
     def load_step_pieces_from_directory(self, pieces_dir):
         """
@@ -211,7 +309,8 @@ class PieceMatcher:
         Parameters:
         -----------
         set_pieces : dict
-            Dictionary with element IDs as keys and lists of image data as values
+            Dictionary with element IDs as keys and lists of image data as
+            values
         """
         for element_id, images in set_pieces.items():
             if element_id not in self.set_pieces:
@@ -268,55 +367,70 @@ class PieceMatcher:
             for element_id, pieces in self.set_pieces.items()
         }
 
-        # Process pieces in parallel
-        #with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = []
-            for piece in self.step_pieces:
-                args = (
-                    piece,
-                    resized_set_pieces,
+        # Prepare GPU matrices if CUDA is available
+        self._prepare_gpu_matrices(resized_set_pieces)
+
+        try:
+            # Process pieces in parallel
+            with ThreadPoolExecutor(max_workers=n_workers) as executor:
+                step_pieces = (
+                    self.step_pieces_gpu
+                    if self.cuda_available
+                    else self.step_pieces
                 )
-                futures.append(executor.submit(_process_piece, args))
+                set_pieces = (
+                    self.set_pieces_gpu
+                    if self.cuda_available
+                    else resized_set_pieces
+                )
+                futures = []
+                for piece in step_pieces:
+                    args = (piece, set_pieces, self.cuda_available)
+                    futures.append(executor.submit(_process_piece, args))
 
-            # Collect results
-            for future in futures:
-                try:
-                    result = future.result()
+                # Collect results
+                for future in futures:
+                    try:
+                        result = future.result()
 
-                    piece = result["piece"]
-                    element_id = result["element_id"]
-                    similarity = result["similarity"]
-                    page_num = piece["page"]
-                    step_num = piece["step"]
-                    piece_num = piece["piece"]
+                        piece = result["piece"]
+                        element_id = result["element_id"]
+                        similarity = result["similarity"]
+                        page_num = piece["page"]
+                        step_num = piece["step"]
+                        piece_num = piece["piece"]
 
-                    # Choose the appropriate dictionary based on the similarity score
-                    d = (
-                        self.matched_step_pieces
-                        if similarity > threshold
-                        else self.unmatched_step_pieces
-                    )
+                        # Choose the appropriate dictionary based on the
+                        # similarity score
+                        d = (
+                            self.matched_step_pieces
+                            if similarity > threshold
+                            else self.unmatched_step_pieces
+                        )
 
-                    if element_id not in d:
-                        d[element_id] = {}
-                    if page_num not in d[element_id]:
-                        d[element_id][page_num] = []
+                        if element_id not in d:
+                            d[element_id] = {}
+                        if page_num not in d[element_id]:
+                            d[element_id][page_num] = []
 
-                    d[element_id][page_num].append(
-                        {
-                            "step": step_num,
-                            "piece": piece_num,
-                            "similarity": similarity,
-                        }
-                    )
-                except Exception as e:
-                    logger.error(f"Error processing piece: {e}")
+                        d[element_id][page_num].append(
+                            {
+                                "step": step_num,
+                                "piece": piece_num,
+                                "similarity": similarity,
+                            }
+                        )
+                    except Exception as e:
+                        logger.error(f"Error processing piece: {e}")
+        finally:
+            # Clean up GPU resources
+            self._clear_gpu_matrices()
 
         # Mark each set piece as matched or unmatched based on the results
         for element_id, pieces in self.set_pieces.items():
             if element_id not in self.matched_step_pieces:
-                # If the element ID is not in matched_step_pieces, mark all as unmatched
+                # If the element ID is not in matched_step_pieces, mark all as
+                # unmatched
                 for piece in pieces:
                     piece["matched"] = False
             else:
@@ -331,7 +445,8 @@ class PieceMatcher:
         try:
             img_pil = Image.fromarray(img)
         except Exception:
-            # If the image is not in a format that can be converted directly, use BytesIO
+            # If the image is not in a format that can be converted directly,
+            # use BytesIO
             img_pil = Image.open(BytesIO(img))
         img_pil.thumbnail(max_size)
         img_bio = BytesIO()
@@ -341,8 +456,9 @@ class PieceMatcher:
 
     def create_comparison_dataframe(self, compare_unmatched=False):
         """
-        Create a Pandas DataFrame showing matched/unmatched pieces and their similarity scores
-        using data from the matched/unmatched dictionaries and the stored images.
+        Create a Pandas DataFrame showing matched/unmatched pieces and their
+        similarity scores using data from the matched/unmatched dictionaries
+        and the stored images.
 
         Returns:
         --------
@@ -419,12 +535,14 @@ class PieceMatcher:
 
     def display_comparison_dataframe(self, df=None, compare_unmatched=False):
         """
-        Display the comparison DataFrame with properly rendered images in a Jupyter notebook
+        Display the comparison DataFrame with properly rendered images in a
+        Jupyter notebook
 
         Parameters:
         -----------
         df : pd.DataFrame, optional
-            DataFrame created by create_comparison_dataframe. If None, creates a new one.
+            DataFrame created by create_comparison_dataframe. If None, creates a
+            new one.
 
         Returns:
         --------
@@ -450,89 +568,6 @@ class PieceMatcher:
             clean_df["Set Image"] = "[IMAGE]"
 
         return clean_df
-
-    @staticmethod
-    def display_dataframe_statistics(dfs):
-        """
-        Display statistics for the given DataFrames.
-
-        Parameters:
-        -----------
-        dfs : dict {name: pd.DataFrame}
-            DataFrames to display statistics for
-        """
-
-        if not dfs:
-            logger.info("No DataFrames provided.")
-            return
-
-        summary = {}
-        for name, df in dfs.items():
-            if df.empty:
-                continue
-            summary[name] = [
-                df.shape[0],
-                df["Similarity Score"].astype(float).min(),
-                df["Similarity Score"].astype(float).max(),
-                f"{df["Similarity Score"].astype(float).mean():.3f}",
-            ]
-
-        # Display the DataFrame
-        # Create the summary DataFrame from the dictionary
-        summary_df = pd.DataFrame(
-            summary,
-            index=[
-                "Total Pieces",
-                "Min Similarity Score",
-                "Max Similarity Score",
-                "Mean Similarity Score",
-            ],
-        )
-
-        display(summary_df)
-        return summary_df
-
-    @staticmethod
-    def _resize_image(img, target_size=(200, 200)):
-        """
-        Resize an image to a standard size.
-
-        Parameters:
-        -----------
-        img_bytes : bytes
-            Image data in bytes format
-        target_size : tuple, optional
-            Target size (width, height)
-
-        Returns:
-        --------
-        numpy.ndarray
-            Resized image
-        """
-        logger.debug("Resizing image...")
-        try:
-            # Convert to PIL Image
-            try:
-                image_pil = Image.fromarray(img)
-            except Exception:
-                # If the image is not in a format that can be converted directly, use BytesIO
-                image_pil = Image.open(BytesIO(img))
-
-            # Resize the image
-            resized_image = image_pil.resize(
-                target_size, Image.Resampling.NEAREST
-            )
-
-            # Convert to RGB if it's not already
-            if resized_image.mode != "RGB":
-                resized_image = resized_image.convert("RGB")
-
-            # return img_byte_arr.getvalue()
-            return np.array(resized_image)
-            # return resized_image
-        except Exception as e:
-            logger.error(f"Error resizing image: {e}")
-            return None
 
     def display_set_pieces_summary(self):
         """
@@ -615,11 +650,180 @@ class PieceMatcher:
 
         return df
 
+    def _prepare_gpu_matrices(self, processed_set_pieces: Dict):
+        """
+        Prepare GPU matrices for all images before matching.
+        Should be called at the start of match_pieces().
+        """
+        if not self.cuda_available:
+            return
+
+        logger.info("Preparing GPU matrices for matching...")
+        try:
+            # Clear any existing GPU matrices
+            self._clear_gpu_matrices()
+
+            # Upload set pieces to GPU
+            for element_id, pieces in processed_set_pieces.items():
+                self.set_pieces_gpu[element_id] = []
+                for piece in pieces:
+                    if not isinstance(piece, np.ndarray):
+                        piece = np.array(piece)
+
+                    # Convert to grayscale if needed
+                    if len(piece.shape) == 3:
+                        piece = cv2.cvtColor(piece, cv2.COLOR_BGR2GRAY)
+
+                    # Upload to GPU
+                    gpu_mat = cv2.cuda_GpuMat()
+                    gpu_mat.upload(piece.astype(np.float32))
+                    self.set_pieces_gpu[element_id].append(gpu_mat)
+
+            # Upload step pieces to GPU
+            self.step_pieces_gpu = []
+            for piece in self.step_pieces:
+                img = piece["img"]
+
+                # Convert to grayscale if needed
+                if len(img.shape) == 3:
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+                # Resize image
+                resized_img = self._resize_image(img)
+
+                # Upload to GPU
+                gpu_mat = cv2.cuda_GpuMat()
+                gpu_mat.upload(resized_img.astype(np.float32))
+
+                self.step_pieces_gpu.append(
+                    {
+                        "gpu_mat": gpu_mat,
+                        "page": piece["page"],
+                        "step": piece["step"],
+                        "piece": piece["piece"],
+                    }
+                )
+
+            logger.info(
+                f"Uploaded {sum(len(pieces) for pieces in self.set_pieces_gpu.values())} "
+                f"set pieces and {len(self.step_pieces_gpu)} step pieces to GPU"
+            )
+        except Exception as e:
+            logger.error(f"Error preparing GPU matrices: {e}")
+            raise
+
+    def _clear_gpu_matrices(self):
+        """Release all GPU matrices"""
+        if not self.cuda_available:
+            return
+
+        # Release set pieces
+        for element_id in self.set_pieces_gpu:
+            for gpu_mat in self.set_pieces_gpu[element_id]:
+                gpu_mat.release()
+        self.set_pieces_gpu.clear()
+
+        # Release step pieces
+        for gpu_mat in self.step_pieces_gpu:
+            gpu_mat["gpu_mat"].release()
+        self.step_pieces_gpu.clear()
+
+    @staticmethod
+    def display_dataframe_statistics(dfs):
+        """
+        Display statistics for the given DataFrames.
+
+        Parameters:
+        -----------
+        dfs : dict {name: pd.DataFrame}
+            DataFrames to display statistics for
+        """
+
+        if not dfs:
+            logger.info("No DataFrames provided.")
+            return
+
+        summary = {}
+        for name, df in dfs.items():
+            if df.empty:
+                continue
+            summary[name] = [
+                df.shape[0],
+                df["Similarity Score"].astype(float).min(),
+                df["Similarity Score"].astype(float).max(),
+                f"{df["Similarity Score"].astype(float).mean():.3f}",
+            ]
+
+        # Display the DataFrame
+        # Create the summary DataFrame from the dictionary
+        summary_df = pd.DataFrame(
+            summary,
+            index=[
+                "Total Pieces",
+                "Min Similarity Score",
+                "Max Similarity Score",
+                "Mean Similarity Score",
+            ],
+        )
+
+        display(summary_df)
+        return summary_df
+
+    @staticmethod
+    def _resize_image(img, target_size=(200, 200), use_gpu=False):
+        """
+        Resize an image to a standard size.
+
+        Parameters:
+        -----------
+        img : Union[bytes, cv2.cuda_GpuMat]
+            Input image, either on CPU or GPU
+        target_size : tuple, optional
+            Target size (width, height)
+
+        Returns:
+        --------
+        Union[numpy.ndarray, cv2.cuda_GpuMat]
+            Resized image in the same format as input (GPU or CPU)
+        """
+        logger.debug("Resizing image...")
+        try:
+            # Resize the image
+            if use_gpu:
+                resized_image = cv2.cuda.resize(
+                    img, target_size, interpolation=cv2.INTER_NEAREST
+                )
+            else:
+                # Convert to PIL Image
+                try:
+                    image_pil = Image.fromarray(img)
+                except Exception:
+                    # If the image is not in a format that can be converted
+                    # directly, use BytesIO
+                    image_pil = Image.open(BytesIO(img))
+                # Resize using OpenCV on CPU
+
+                resized_image = image_pil.resize(
+                    target_size, Image.Resampling.NEAREST
+                )
+
+            # Convert to RGB if it's not already
+            # if resized_image.mode != "RGB":
+            #    resized_image = resized_image.convert("RGB")
+
+            # return img_byte_arr.getvalue()
+            return np.array(resized_image)
+
+        except Exception as e:
+            logger.error(f"Error resizing image: {e}")
+            return None
+
 
 def main():
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
 
-    # Code profiling
+    print(f"OpenCV version: {cv2.__version__}")
+
     from cProfile import Profile
     from pstats import SortKey, Stats
     import time
