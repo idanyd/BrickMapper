@@ -22,8 +22,37 @@ class MatchResult(TypedDict):
     similarity: float
 
 
+class StreamPool:
+    """A pool of CUDA streams for template matching."""
+
+    def __init__(self, n_streams=4):
+        """Initialize the stream pool.
+
+        Args:
+            n_streams: Number of streams to maintain in the pool
+        """
+        self.streams = [cv2.cuda.Stream() for _ in range(n_streams)]
+        self.current = 0
+
+    def __del__(self):
+        self.streams = None  # Streams are automatically destroyed
+
+    def get_stream(self):
+        """Get the next available stream in round-robin fashion."""
+        stream = self.streams[self.current]
+        self.current = (self.current + 1) % len(self.streams)
+        return stream
+
+    def wait_all(self):
+        """Wait for all streams to complete."""
+        for stream in self.streams:
+            stream.waitForCompletion()
+
+
 def calculate_template_matching_score_gpu(
-    gpu_step_piece: cv2.cuda_GpuMat, set_piece_gpu_mat: cv2.cuda_GpuMat
+    gpu_step_piece: cv2.cuda_GpuMat,
+    set_piece_gpu_mat: cv2.cuda_GpuMat,
+    stream: cv2.cuda.Stream = None,
 ) -> float:
     """Calculate template matching score using GPU."""
     try:
@@ -37,7 +66,9 @@ def calculate_template_matching_score_gpu(
 
         # Perform matching with error checking
         try:
-            gpu_result = matcher.match(gpu_step_piece, set_piece_gpu_mat)
+            gpu_result = matcher.match(
+                gpu_step_piece, set_piece_gpu_mat, stream=stream
+            )
             result = gpu_result.download()
             score = float(result.min())
         except cv2.error as e:
@@ -71,6 +102,7 @@ def template_match_candidates(
     candidates: List[dict],
     resized_set_pieces: Dict,
     cuda_available: bool,
+    stream: cv2.cuda.Stream = None,
 ) -> dict:
     """
     Calculate template matching for a list of candidate matches.
@@ -88,7 +120,7 @@ def template_match_candidates(
         if cuda_available:
             # Use GPU matrices directly
             template_score = calculate_template_matching_score_gpu(
-                resized_step_piece, candidate["gpu_mat"]
+                resized_step_piece, candidate["gpu_mat"], stream
             )
         else:
             set_piece_idx = candidate.get("set_piece_idx", 0)
@@ -115,6 +147,7 @@ def perform_template_matching(
     resized_step_piece: Union[np.ndarray, cv2.cuda.GpuMat],
     resized_set_pieces: Dict,
     cuda_available: bool,
+    stream: cv2.cuda.Stream = None,
 ) -> dict:
     """
     Run template matching on all set pieces for a given step piece.
@@ -137,7 +170,11 @@ def perform_template_matching(
             for idx in range(len(pieces))
         ]
     return template_match_candidates(
-        resized_step_piece, all_candidates, resized_set_pieces, cuda_available
+        resized_step_piece,
+        all_candidates,
+        resized_set_pieces,
+        cuda_available,
+        stream,
     )
 
 
@@ -145,7 +182,7 @@ def _process_piece(args: tuple) -> MatchResult:
     """
     Process a single step piece using template matching.
     """
-    (piece, resized_set_pieces, cuda_available) = args
+    (piece, resized_set_pieces, cuda_available, stream) = args
 
     try:
         if cuda_available:
@@ -154,7 +191,7 @@ def _process_piece(args: tuple) -> MatchResult:
             step_piece_gpu = piece["gpu_mat"]
 
             best_match = perform_template_matching(
-                step_piece_gpu, resized_set_pieces, cuda_available
+                step_piece_gpu, resized_set_pieces, cuda_available, stream
             )
 
             metadata = {
@@ -360,7 +397,7 @@ class PieceMatcher:
     def match_pieces(self, threshold=0.15, n_workers=16):
         """
         Match step pieces to set pieces using template matching
-        Uses single thread for CUDA and multiple threads for CPU.
+        Uses stream pools for CUDA and multiple threads for CPU.
 
         Parameters:
         ----
@@ -401,15 +438,24 @@ class PieceMatcher:
             )
 
             if self.cuda_available:
-                # Single-threaded processing for CUDA
-                logger.info("Using single-threaded processing with CUDA")
+                results = []
+                # stream pools processing for CUDA
+                logger.info("Using CUDA with stream pools")
+                # Create stream pool
+                stream_pool = StreamPool(n_streams=100)
                 threshold = convert_threshold(
                     threshold, step_pieces[0]["gpu_mat"]
                 )
 
                 for piece in step_pieces:
-                    args = (piece, set_pieces, self.cuda_available)
-                    result = _process_piece(args)
+                    stream = stream_pool.get_stream()
+                    args = (piece, set_pieces, self.cuda_available, stream)
+                    results.append(_process_piece(args))
+
+                # Wait for all streams to complete
+                stream_pool.wait_all()
+                # Process results
+                for result in results:
                     self._process_result(result, threshold)
             else:
                 # Multi-threaded processing for CPU
@@ -419,7 +465,7 @@ class PieceMatcher:
                 with ThreadPoolExecutor(max_workers=n_workers) as executor:
                     futures = []
                     for piece in step_pieces:
-                        args = (piece, set_pieces, self.cuda_available)
+                        args = (piece, set_pieces, self.cuda_available, None)
                         futures.append(executor.submit(_process_piece, args))
 
                     # Collect results
