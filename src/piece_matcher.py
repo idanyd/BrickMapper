@@ -19,13 +19,20 @@ class MatchResult(TypedDict):
 
     piece: dict
     element_id: str
-    similarity: float
+    diff: float
+
+
+class GpuMatchResult(TypedDict):
+    """Type definition for GPU matching results"""
+
+    element_id: str
+    result: cv2.cuda_GpuMat
 
 
 class StreamPool:
     """A pool of CUDA streams for template matching."""
 
-    def __init__(self, n_streams=4):
+    def __init__(self, n_streams=10):
         """Initialize the stream pool.
 
         Args:
@@ -49,51 +56,176 @@ class StreamPool:
             stream.waitForCompletion()
 
 
-def calculate_template_matching_score_gpu(
-    gpu_step_piece: cv2.cuda_GpuMat,
-    set_piece_gpu_mat: cv2.cuda_GpuMat,
-    stream: cv2.cuda.Stream = None,
-) -> float:
-    """Calculate template matching score using GPU."""
-    try:
-        # Verify GPU matrices
-        logger.debug(f"GPU step piece type: {gpu_step_piece.type()}")
-        logger.debug(f"GPU set piece type: {set_piece_gpu_mat.type()}")
-        logger.debug(f"GPU step piece size: {gpu_step_piece.size()}")
-        logger.debug(f"GPU set piece size: {set_piece_gpu_mat.size()}")
-        # Create matcher
-        matcher = cv2.cuda.createTemplateMatching(cv2.CV_32F, cv2.TM_SQDIFF)
+class GpuPieceProcessor:
+    """Class for processing pieces using GPU streams."""
 
-        # Perform matching with error checking
+    def __init__(self, step_pieces, set_pieces, n_streams=10):
+        """Initialize the GpuPieceProcessor class."""
+        self.stream_pool = StreamPool(n_streams=n_streams)
+        self.step_pieces = step_pieces  # List of step pieces to process
+        self.set_pieces = (
+            set_pieces  # Dictionary of set pieces to match against
+        )
+
+    def process_pieces(self) -> List[GpuMatchResult]:
+        """
+        Process multiple step pieces using template matching with GPU streams.
+        """
+        results = []
+        for step_piece in self.step_pieces:
+            results.append(self._process_piece(step_piece))
+
+        # Wait for all streams to complete
+        self.stream_pool.wait_all()
+
+        # Process results
+        final_matches = []
+        # Iterate over the results and extract the best match for each piece
+        for step_piece, result in zip(self.step_pieces, results):
+            match_results = result["match_results"]
+            scores = [
+                {
+                    "element_id": match_result["element_id"],
+                    "diff": float(match_result["result"].download().min()),
+                }
+                for match_result in match_results
+            ]
+
+            best_match = min(scores, key=lambda x: x["diff"])
+
+            metadata = {
+                "page": step_piece["page"],
+                "step": step_piece["step"],
+                "piece": step_piece["piece"],
+            }
+
+            final_match = {
+                "piece": metadata,
+                "element_id": best_match["element_id"],
+                "diff": best_match["diff"],
+            }
+
+            final_matches.append(final_match)
+
+        return final_matches
+
+    def _process_piece(
+        self,
+        step_piece: dict,
+    ) -> GpuMatchResult:
+        """
+        Process a single step piece using template matching.
+        """
         try:
-            gpu_result = matcher.match(
-                gpu_step_piece, set_piece_gpu_mat, stream=stream
+            # Assuming piece is a dictionary with 'gpu_mat' and metadata
+            match_results = self._perform_template_matching(
+                step_piece["gpu_mat"]
             )
-            result = gpu_result.download()
-            score = float(result.min())
-        except cv2.error as e:
-            logger.error(f"Template matching failed: {e}")
+
+            # Piece is a GpuMat, but we need the metadata
+            metadata = {
+                "page": step_piece["page"],
+                "step": step_piece["step"],
+                "piece": step_piece["piece"],
+            }
+
+            return {
+                "piece": metadata,
+                "match_results": match_results,
+            }
+
+        except Exception as e:
+            logger.error(f"Error during piece processing: {e}", exc_info=True)
             raise
-        finally:
-            # Clean up GPU resources
-            if "gpu_result" in locals():
-                gpu_result.release()
 
-        return score
+    def _perform_template_matching(
+        self,
+        step_piece: cv2.cuda_GpuMat,
+    ) -> List[dict]:
+        """
+        Run template matching on the GPU for all set pieces for a given step piece.
+        """
+        candidates = [
+            {
+                "element_id": element_id,
+                "set_piece_idx": idx,
+                "gpu_mat": gpu_mat,
+            }
+            for element_id, pieces in self.set_pieces.items()
+            for idx, gpu_mat in enumerate(pieces)
+        ]
 
-    except Exception as e:
-        logger.error(f"GPU template matching error: {e}")
-        raise
+        logger.debug("Calculating template matching for candidates...")
+
+        # Initialize lists to store results
+        results = []
+        for candidate in candidates:
+            element_id = candidate["element_id"]
+
+            # Use GPU matrices directly
+            template_result = self._calculate_template_matching(
+                step_piece, candidate["gpu_mat"]
+            )
+
+            match_result = {
+                "element_id": element_id,
+                "result": template_result,
+            }
+
+            results.append(match_result)
+
+        return results
+
+    def _calculate_template_matching(
+        self,
+        step_piece: cv2.cuda_GpuMat,
+        set_piece: cv2.cuda_GpuMat,
+    ) -> cv2.cuda_GpuMat:
+        """Calculate template matching score using GPU without downloading the result"""
+        try:
+            # Verify GPU matrices
+            logger.debug(f"GPU step piece type: {step_piece.type()}")
+            logger.debug(f"GPU set piece type: {set_piece.type()}")
+            logger.debug(f"GPU step piece size: {step_piece.size()}")
+            logger.debug(f"GPU set piece size: {set_piece.size()}")
+
+            # Create matcher
+            matcher = cv2.cuda.createTemplateMatching(
+                cv2.CV_32F, cv2.TM_SQDIFF
+            )
+
+            # Perform matching
+            stream = self.stream_pool.get_stream()
+            gpu_result = matcher.match(step_piece, set_piece, stream=stream)
+            return gpu_result
+
+        except Exception as e:
+            logger.error(f"GPU template matching error: {e}")
+            raise
+
+    @staticmethod
+    def convert_threshold(threshold: float, image: cv2.cuda_GpuMat):
+        """
+        Convert threshold from relative to a nominal value
+        """
+        if threshold < 0.0 or threshold > 1.0:
+            raise ValueError("Threshold must be between 0.0 and 1.0")
+        max_pixel_diff = 255.0
+        max_sqdiff_score = (
+            image.size()[0] * image.size()[1] * max_pixel_diff * max_pixel_diff
+        )
+        # Calculate the threshold value based on the image size
+        return threshold * max_sqdiff_score
 
 
-def calculate_template_matching_score(
+def calculate_template_matching_score_cpu(
     step_piece_img: np.ndarray, set_piece_img: np.ndarray
 ) -> float:
     """Calculate template matching score between two images"""
     result = cv2.matchTemplate(
         step_piece_img, set_piece_img, cv2.TM_SQDIFF_NORMED
     )
-    min_val, max_val, _, _ = cv2.minMaxLoc(result)
+    min_val, _, _, _ = cv2.minMaxLoc(result)
     return min_val
 
 
@@ -101,8 +233,6 @@ def template_match_candidates(
     resized_step_piece: Union[np.ndarray, cv2.cuda_GpuMat],
     candidates: List[dict],
     resized_set_pieces: Dict,
-    cuda_available: bool,
-    stream: cv2.cuda.Stream = None,
 ) -> dict:
     """
     Calculate template matching for a list of candidate matches.
@@ -117,22 +247,16 @@ def template_match_candidates(
     for candidate in candidates:
         element_id = candidate["element_id"]
 
-        if cuda_available:
-            # Use GPU matrices directly
-            template_score = calculate_template_matching_score_gpu(
-                resized_step_piece, candidate["gpu_mat"], stream
-            )
-        else:
-            set_piece_idx = candidate.get("set_piece_idx", 0)
-            set_piece_data = resized_set_pieces[element_id][set_piece_idx]
-            # Calculate template matching scores using CPU arrays
-            template_score = calculate_template_matching_score(
-                resized_step_piece, set_piece_data
-            )
+        set_piece_idx = candidate.get("set_piece_idx", 0)
+        set_piece_data = resized_set_pieces[element_id][set_piece_idx]
+        # Calculate template matching scores using CPU arrays
+        template_score = calculate_template_matching_score_cpu(
+            resized_step_piece, set_piece_data
+        )
 
         match_result = {
             "element_id": element_id,
-            "similarity": template_score,
+            "diff": template_score,
         }
 
         # Update best match based on the score
@@ -143,101 +267,93 @@ def template_match_candidates(
     return best_match
 
 
-def perform_template_matching(
+def perform_template_matching_cpu(
     resized_step_piece: Union[np.ndarray, cv2.cuda.GpuMat],
     resized_set_pieces: Dict,
-    cuda_available: bool,
-    stream: cv2.cuda.Stream = None,
 ) -> dict:
     """
     Run template matching on all set pieces for a given step piece.
     """
-    if cuda_available:
-        # For GPU mode, resized_step_piece is a GpuMat
-        all_candidates = [
-            {
-                "element_id": element_id,
-                "set_piece_idx": idx,
-                "gpu_mat": gpu_mat,
-            }
-            for element_id, pieces in resized_set_pieces.items()
-            for idx, gpu_mat in enumerate(pieces)
-        ]
-    else:
-        all_candidates = [
-            {"element_id": element_id, "set_piece_idx": idx}
-            for element_id, pieces in resized_set_pieces.items()
-            for idx in range(len(pieces))
-        ]
-    return template_match_candidates(
-        resized_step_piece,
-        all_candidates,
-        resized_set_pieces,
-        cuda_available,
-        stream,
-    )
+    candidates = [
+        {"element_id": element_id, "set_piece_idx": idx}
+        for element_id, pieces in resized_set_pieces.items()
+        for idx in range(len(pieces))
+    ]
+
+    logger.debug("Calculating template matching for candidates...")
+
+    # Initialize lists to store results
+    best_match = None
+    best_template_score = float("inf")
+    # best_template_score = 0.0
+
+    for candidate in candidates:
+        element_id = candidate["element_id"]
+
+        set_piece_idx = candidate.get("set_piece_idx", 0)
+        set_piece_data = resized_set_pieces[element_id][set_piece_idx]
+        # Calculate template matching scores using CPU arrays
+        template_score = calculate_template_matching_score_cpu(
+            resized_step_piece, set_piece_data
+        )
+
+        match_result = {
+            "element_id": element_id,
+            "diff": template_score,
+        }
+
+        # Update best match based on the score
+        if template_score < best_template_score:
+            best_template_score = template_score
+            best_match = match_result
+
+    return best_match
 
 
-def _process_piece(args: tuple) -> MatchResult:
+def _process_pieces_cpu(
+    step_pieces: List[dict], set_pieces: Dict, n_workers: int
+):
+    """
+    Process multiple step pieces using template matching with CPU threads.
+    """
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = []
+        for piece in step_pieces:
+            args = (piece, set_pieces)
+            futures.append(executor.submit(_process_piece_cpu, args))
+
+        # Collect results
+        try:
+            results = [future.result() for future in futures]
+        except Exception as e:
+            logger.error(f"Error processing piece: {e}")
+
+    return results
+
+
+def _process_piece_cpu(args: tuple) -> MatchResult:
     """
     Process a single step piece using template matching.
     """
-    (piece, resized_set_pieces, cuda_available, stream) = args
+    (step_piece, resized_set_pieces) = args
 
     try:
-        if cuda_available:
-            # For GPU mode, piece is a GpuMat, but we need the metadata
-            # Assuming piece is a dictionary with 'gpu_mat' and metadata
-            step_piece_gpu = piece["gpu_mat"]
 
-            best_match = perform_template_matching(
-                step_piece_gpu, resized_set_pieces, cuda_available, stream
-            )
+        resized_step_piece = PieceMatcher._resize_image(step_piece["img"])
 
-            metadata = {
-                "page": piece["page"],
-                "step": piece["step"],
-                "piece": piece["piece"],
-            }
+        best_match = perform_template_matching_cpu(
+            resized_step_piece, resized_set_pieces
+        )
 
-            return {
-                "piece": metadata,
-                "element_id": best_match["element_id"],
-                "similarity": best_match["similarity"],
-            }
-        else:
-            # CPU mode - existing code
-            resized_step_piece = PieceMatcher._resize_image(
-                piece["img"], use_gpu=cuda_available
-            )
-
-            best_match = perform_template_matching(
-                resized_step_piece, resized_set_pieces, cuda_available
-            )
-
-            return {
-                "piece": piece,
-                "element_id": best_match["element_id"],
-                "similarity": best_match["similarity"],
-            }
+        return {
+            "piece": step_piece,
+            "element_id": best_match["element_id"],
+            "diff": best_match["diff"],
+        }
 
     except Exception as e:
         logger.error(f"Error during piece processing: {e}", exc_info=True)
         raise
-
-
-def convert_threshold(threshold: float, image: cv2.cuda_GpuMat):
-    """
-    Convert threshold from relative to a nominal value
-    """
-    if threshold < 0.0 or threshold > 1.0:
-        raise ValueError("Threshold must be between 0.0 and 1.0")
-    max_pixel_diff = 255.0
-    max_sqdiff_score = (
-        image.size()[0] * image.size()[1] * max_pixel_diff * max_pixel_diff
-    )
-    # Calculate the threshold value based on the image size
-    return threshold * max_sqdiff_score
 
 
 class PieceMatcher:
@@ -258,9 +374,6 @@ class PieceMatcher:
 
             # Set device before any other CUDA operations
             cv2.cuda.setDevice(0)
-
-            # Warm up CUDA context
-            # cv2.cuda.resetDevice()
 
         except Exception as e:
             logger.warning(f"CUDA initialization failed: {e}")
@@ -402,7 +515,7 @@ class PieceMatcher:
         Parameters:
         ----
         threshold : float, optional
-            Similarity threshold for matching
+            difference threshold for matching
         n_workers : int, optional
             Number of worker threads to use for CPU processing
         """
@@ -426,55 +539,30 @@ class PieceMatcher:
         self._prepare_gpu_matrices(resized_set_pieces)
 
         try:
-            step_pieces = (
-                self.step_pieces_gpu
-                if self.cuda_available
-                else self.step_pieces
-            )
-            set_pieces = (
-                self.set_pieces_gpu
-                if self.cuda_available
-                else resized_set_pieces
-            )
-
             if self.cuda_available:
                 results = []
                 # stream pools processing for CUDA
                 logger.info("Using CUDA with stream pools")
-                # Create stream pool
-                stream_pool = StreamPool(n_streams=100)
-                threshold = convert_threshold(
-                    threshold, step_pieces[0]["gpu_mat"]
+                gpu_piece_processor = GpuPieceProcessor(
+                    self.step_pieces_gpu, self.set_pieces_gpu, n_streams=100
                 )
+                results = gpu_piece_processor.process_pieces()
 
-                for piece in step_pieces:
-                    stream = stream_pool.get_stream()
-                    args = (piece, set_pieces, self.cuda_available, stream)
-                    results.append(_process_piece(args))
-
-                # Wait for all streams to complete
-                stream_pool.wait_all()
-                # Process results
-                for result in results:
-                    self._process_result(result, threshold)
+                threshold = gpu_piece_processor.convert_threshold(
+                    threshold, self.step_pieces_gpu[0]["gpu_mat"]
+                )
             else:
                 # Multi-threaded processing for CPU
                 logger.info(
                     f"Using multi-threaded processing with {n_workers} workers"
                 )
-                with ThreadPoolExecutor(max_workers=n_workers) as executor:
-                    futures = []
-                    for piece in step_pieces:
-                        args = (piece, set_pieces, self.cuda_available, None)
-                        futures.append(executor.submit(_process_piece, args))
+                results = _process_pieces_cpu(
+                    self.step_pieces, resized_set_pieces, n_workers
+                )
 
-                    # Collect results
-                    for future in futures:
-                        try:
-                            result = future.result()
-                            self._process_result(result, threshold)
-                        except Exception as e:
-                            logger.error(f"Error processing piece: {e}")
+            # Process results
+            for result in results:
+                self._process_result(result, threshold)
         except Exception as e:
             logger.error(f"Error during matching: {e}")
 
@@ -505,19 +593,19 @@ class PieceMatcher:
         result : dict
             Result from _process_piece
         threshold : float
-            Similarity threshold for matching
+            difference threshold for matching
         """
         piece = result["piece"]
         element_id = result["element_id"]
-        similarity = result["similarity"]
+        diff = result["diff"]
         page_num = piece["page"]
         step_num = piece["step"]
         piece_num = piece["piece"]
 
-        # Choose the appropriate dictionary based on the similarity score
+        # Choose the appropriate dictionary based on the difference score
         d = (
             self.matched_step_pieces
-            if similarity < threshold
+            if diff < threshold
             else self.unmatched_step_pieces
         )
 
@@ -530,7 +618,7 @@ class PieceMatcher:
             {
                 "step": step_num,
                 "piece": piece_num,
-                "similarity": similarity,
+                "diff": diff,
             }
         )
 
@@ -551,7 +639,7 @@ class PieceMatcher:
     def create_comparison_dataframe(self, compare_unmatched=False):
         """
         Create a Pandas DataFrame showing matched/unmatched pieces and their
-        similarity scores using data from the matched/unmatched dictionaries
+        difference scores using data from the matched/unmatched dictionaries
         and the stored images.
 
         Returns:
@@ -618,7 +706,7 @@ class PieceMatcher:
                             "Step": step_num,
                             "Step Piece Image": step_piece_html,
                             "Set Piece Image": set_piece_html,
-                            "Similarity Score": f"{step_info['similarity']:.3f}",
+                            "Difference Score": f"{step_info['diff']:.3f}",
                         }
                     )
 
@@ -669,7 +757,7 @@ class PieceMatcher:
         - Element ID
         - Set piece image
         - Match status
-        - Best match similarity (if matched)
+        - Best match difference (if matched)
 
         Returns:
         ----
@@ -687,19 +775,19 @@ class PieceMatcher:
             set_piece_html = self._resize_image_for_display(set_piece_img)
 
             # Check if this element was matched in any step
-            best_similarity = 0.0
+            best_difference = 0.0
             match_status = "Unmatched"
 
             if element_id in self.matched_step_pieces:
                 match_status = "Matched"
-                # Find the best similarity score for this element
+                # Find the best difference score for this element
                 for page_matches in self.matched_step_pieces[
                     element_id
                 ].values():
                     for match in page_matches:
-                        best_similarity = max(
-                            best_similarity,
-                            float(match["similarity"]),
+                        best_difference = max(
+                            best_difference,
+                            float(match["diff"]),
                         )
 
             # Add row to data
@@ -708,9 +796,9 @@ class PieceMatcher:
                     "Element ID": element_id,
                     "Set Piece Image": set_piece_html,
                     "Match Status": match_status,
-                    "Best Template Similarity": (
-                        f"{match['similarity']:.3f}"
-                        if best_similarity > 0
+                    "Best Template Difference": (
+                        f"{match['diff']:.3f}"
+                        if best_difference > 0
                         else "N/A"
                     ),
                 }
@@ -719,9 +807,9 @@ class PieceMatcher:
         # Create DataFrame
         df = pd.DataFrame(data_rows)
 
-        # Sort by match status (Matched first) and then by similarity score
+        # Sort by match status (Matched first) and then by difference score
         df = df.sort_values(
-            by=["Match Status", "Best Template Similarity"],
+            by=["Match Status", "Best Template Difference"],
             ascending=[True, False],
         )
 
@@ -843,9 +931,9 @@ class PieceMatcher:
                 continue
             summary[name] = [
                 df.shape[0],
-                df["Similarity Score"].astype(float).min(),
-                df["Similarity Score"].astype(float).max(),
-                f"{df["Similarity Score"].astype(float).mean():.3f}",
+                df["Difference Score"].astype(float).min(),
+                df["Difference Score"].astype(float).max(),
+                f"{df["Difference Score"].astype(float).mean():.3f}",
             ]
 
         # Display the DataFrame
@@ -854,9 +942,9 @@ class PieceMatcher:
             summary,
             index=[
                 "Total Pieces",
-                "Min Similarity Score",
-                "Max Similarity Score",
-                "Mean Similarity Score",
+                "Min Difference Score",
+                "Max Difference Score",
+                "Mean Difference Score",
             ],
         )
 
