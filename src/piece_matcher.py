@@ -66,6 +66,10 @@ class GpuPieceProcessor:
         self.set_pieces = (
             set_pieces  # Dictionary of set pieces to match against
         )
+        # Create matcher
+        self.matcher = cv2.cuda.createTemplateMatching(
+            cv2.CV_32F, cv2.TM_SQDIFF
+        )
 
     def process_pieces(self) -> List[GpuMatchResult]:
         """
@@ -143,7 +147,7 @@ class GpuPieceProcessor:
         step_piece: cv2.cuda_GpuMat,
     ) -> List[dict]:
         """
-        Run template matching on the GPU for all set pieces for a given step piece.
+        Run template matching for all set pieces for a given step piece.
         """
         candidates = [
             {
@@ -189,14 +193,11 @@ class GpuPieceProcessor:
             logger.debug(f"GPU step piece size: {step_piece.size()}")
             logger.debug(f"GPU set piece size: {set_piece.size()}")
 
-            # Create matcher
-            matcher = cv2.cuda.createTemplateMatching(
-                cv2.CV_32F, cv2.TM_SQDIFF
-            )
-
             # Perform matching
             stream = self.stream_pool.get_stream()
-            gpu_result = matcher.match(step_piece, set_piece, stream=stream)
+            gpu_result = self.matcher.match(
+                step_piece, set_piece, stream=stream
+            )
             return gpu_result
 
         except Exception as e:
@@ -507,7 +508,7 @@ class PieceMatcher:
             return match.group(1)
         return None
 
-    def match_pieces(self, threshold=0.15, n_workers=16):
+    def match_pieces(self, threshold=0.031, n_workers=16):
         """
         Match step pieces to set pieces using template matching
         Uses stream pools for CUDA and multiple threads for CPU.
@@ -706,7 +707,7 @@ class PieceMatcher:
                             "Step": step_num,
                             "Step Piece Image": step_piece_html,
                             "Set Piece Image": set_piece_html,
-                            "Difference Score": f"{step_info['diff']:.3f}",
+                            "Difference Score": f"{step_info['diff']:,}",
                         }
                     )
 
@@ -775,18 +776,18 @@ class PieceMatcher:
             set_piece_html = self._resize_image_for_display(set_piece_img)
 
             # Check if this element was matched in any step
-            best_difference = 0.0
-            match_status = "Unmatched"
-
+            match_status = (
+                "Matched"
+                if element_id in self.matched_step_pieces
+                else "Unmatched"
+            )
+            min_difference = float("inf")
+            # Get the minimum difference score for this element
             if element_id in self.matched_step_pieces:
-                match_status = "Matched"
-                # Find the best difference score for this element
-                for page_matches in self.matched_step_pieces[
-                    element_id
-                ].values():
-                    for match in page_matches:
-                        best_difference = max(
-                            best_difference,
+                for matches in self.matched_step_pieces[element_id].values():
+                    for match in matches:
+                        min_difference = min(
+                            min_difference,
                             float(match["diff"]),
                         )
 
@@ -796,11 +797,7 @@ class PieceMatcher:
                     "Element ID": element_id,
                     "Set Piece Image": set_piece_html,
                     "Match Status": match_status,
-                    "Best Template Difference": (
-                        f"{match['diff']:.3f}"
-                        if best_difference > 0
-                        else "N/A"
-                    ),
+                    "Min Template Difference": min_difference,
                 }
             )
 
@@ -809,8 +806,12 @@ class PieceMatcher:
 
         # Sort by match status (Matched first) and then by difference score
         df = df.sort_values(
-            by=["Match Status", "Best Template Difference"],
-            ascending=[True, False],
+            by=["Match Status", "Min Template Difference"],
+            ascending=[True, True],
+        )
+        # Display comma separators for large numbers
+        df["Min Template Difference"] = df["Min Template Difference"].apply(
+            lambda x: f"{x:,}" if x < float("inf") else "N/A"
         )
 
         # Display the DataFrame with HTML rendering enabled
@@ -929,11 +930,16 @@ class PieceMatcher:
         for name, df in dfs.items():
             if df.empty:
                 continue
+            sanitized_diff = (
+                df["Difference Score"]
+                .str.replace(r"[^\d.-]", "", regex=True)
+                .astype(float)
+            )
             summary[name] = [
                 df.shape[0],
-                df["Difference Score"].astype(float).min(),
-                df["Difference Score"].astype(float).max(),
-                f"{df["Difference Score"].astype(float).mean():.3f}",
+                f"{sanitized_diff.min():,}",
+                f"{sanitized_diff.max():,}",
+                f"{sanitized_diff.mean():,}",
             ]
 
         # Display the DataFrame
