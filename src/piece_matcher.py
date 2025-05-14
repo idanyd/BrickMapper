@@ -85,7 +85,7 @@ class GpuPieceProcessor:
         # Process results
         final_matches = []
         # Iterate over the results and extract the best match for each piece
-        for step_piece, result in zip(self.step_pieces, results):
+        for result in results:
             match_results = result["match_results"]
             scores = [
                 {
@@ -97,14 +97,8 @@ class GpuPieceProcessor:
 
             best_match = min(scores, key=lambda x: x["diff"])
 
-            metadata = {
-                "page": step_piece["page"],
-                "step": step_piece["step"],
-                "piece": step_piece["piece"],
-            }
-
             final_match = {
-                "piece": metadata,
+                "piece": result["piece"],
                 "element_id": best_match["element_id"],
                 "diff": best_match["diff"],
             }
@@ -166,7 +160,6 @@ class GpuPieceProcessor:
         for candidate in candidates:
             element_id = candidate["element_id"]
 
-            # Use GPU matrices directly
             template_result = self._calculate_template_matching(
                 step_piece, candidate["gpu_mat"]
             )
@@ -243,7 +236,6 @@ def template_match_candidates(
     # Initialize lists to store results
     best_match = None
     best_template_score = float("inf")
-    # best_template_score = 0.0
 
     for candidate in candidates:
         element_id = candidate["element_id"]
@@ -286,7 +278,6 @@ def perform_template_matching_cpu(
     # Initialize lists to store results
     best_match = None
     best_template_score = float("inf")
-    # best_template_score = 0.0
 
     for candidate in candidates:
         element_id = candidate["element_id"]
@@ -390,6 +381,56 @@ class PieceMatcher:
         # GPU matrices for processed images
         self.set_pieces_gpu = {}  # {element_id: [GpuMat, ...]}
         self.step_pieces_gpu = []  # List of GpuMat objects
+
+    def get_gpu_step_piece(self, page_num, step_num, piece_num):
+        """
+        Get a step piece image by its page, step, and piece numbers.
+
+        Parameters:
+        -----------
+        page_num : int
+            Page number of the step piece
+        step_num : int
+            Step number of the step piece
+        piece_num : int
+            Piece number of the step piece
+
+        Returns:
+        --------
+        cv2.cuda_GpuMat or None
+            The GPU image if found, None otherwise
+        """
+        return self.get_step_piece(page_num, step_num, piece_num, use_gpu=True)
+
+    def get_step_piece(self, page_num, step_num, piece_num, use_gpu=False):
+        """
+        Get a step piece image by its page, step, and piece numbers.
+
+        Parameters:
+        -----------
+        page_num : int
+            Page number of the step piece
+        step_num : int
+            Step number of the step piece
+        piece_num : int
+            Piece number of the step piece
+        use_gpu: bool, optional
+            Should we use the GPU step pieces?
+
+        Returns:
+        --------
+        np.ndarray or None
+            The image array if found, None otherwise
+        """
+        step_pieces = self.step_pieces_gpu if use_gpu else self.step_pieces
+        for piece in step_pieces:
+            if (
+                piece["page"] == page_num
+                and piece["step"] == step_num
+                and piece["piece"] == piece_num
+            ):
+                return piece
+        return None
 
     def __del__(self):
         """Cleanup GPU resources"""
@@ -566,10 +607,6 @@ class PieceMatcher:
                 self._process_result(result, threshold)
         except Exception as e:
             logger.error(f"Error during matching: {e}")
-
-        finally:
-            # Clean up GPU resources
-            self._clear_gpu_matrices()
 
         # Mark each set piece as matched or unmatched based on the results
         for element_id, pieces in self.set_pieces.items():
@@ -833,6 +870,104 @@ class PieceMatcher:
 
         return df
 
+    def generate_set_piece_matches_dataframe(self, step_piece, processor=None):
+        """
+        Generate a dataframe with all set piece matches for a given step piece.
+
+        Parameters:
+        ----
+        step_piece : dict
+            Dictionary containing step piece data with 'gpu_mat', 'page', 'step', 'piece'
+        processor : GpuPieceProcessor, optional
+            Initialized GpuPieceProcessor to use for scoring. If None, a new one will be created.
+
+        Returns:
+        ----
+        pd.DataFrame
+            DataFrame with element_id, render image, and template score
+        """
+        # Create a processor if not provided
+        if processor is None:
+            processor = GpuPieceProcessor([step_piece], self.set_pieces_gpu)
+
+        # Get all match results for this step piece
+        match_results = processor._perform_template_matching(
+            step_piece["gpu_mat"]
+        )
+
+        # Process results into a list for DataFrame
+        data_rows = []
+
+        for match_result in match_results:
+            element_id = match_result["element_id"]
+            # Download the result from GPU
+            score = float(match_result["result"].download().min())
+
+            # Get the set piece image for display
+            if (
+                element_id in self.set_pieces
+                and len(self.set_pieces[element_id]) > 0
+            ):
+                # Use the first render image for this element
+                set_piece_img = None
+                for piece in self.set_pieces[element_id]:
+                    # Download the GPU matrix to CPU for display
+                    set_piece_img = piece["image_data"]
+                    break
+
+                # Create HTML for the set piece image
+                set_piece_html = self._resize_image_for_display(set_piece_img)
+
+                # Add row to data
+                data_rows.append(
+                    {
+                        "Element ID": element_id,
+                        "Set Piece Image": set_piece_html,
+                        "Template Score": score,
+                    }
+                )
+
+        # Create DataFrame
+        df = pd.DataFrame(data_rows)
+
+        # Sort by score (lower is better for TM_SQDIFF)
+        df = df.sort_values(by="Template Score", ascending=True)
+
+        # Display comma separators for large numbers
+        df["Template Score"] = df["Template Score"].apply(lambda x: f"{x:,}")
+
+        return df
+
+    def display_set_piece_matches(self, step_piece, processor=None):
+        """
+        Generate and display a dataframe with all set piece matches for a given step piece.
+
+        Parameters:
+        ----
+        step_piece : dict
+            Dictionary containing step piece data with 'gpu_mat', 'page', 'step', 'piece'
+        processor : GpuPieceProcessor, optional
+            Initialized GpuPieceProcessor to use for scoring. If None, a new one will be created.
+
+        Returns:
+        ----
+        pd.DataFrame
+            DataFrame with element_id, render image, and template score
+        """
+
+        # Generate the dataframe
+        df = self.generate_set_piece_matches_dataframe(step_piece, processor)
+
+        # Display the step piece we're matching
+        print(
+            f"Matches for step piece: Page {step_piece['page']}, Step {step_piece['step']}, Piece {step_piece['piece']}"
+        )
+
+        # Display the DataFrame with HTML rendering enabled
+        display(HTML(df.to_html(escape=False)))
+
+        return df
+
     def _prepare_gpu_matrices(self, processed_set_pieces: Dict):
         """
         Prepare GPU matrices for all images before matching.
@@ -1018,7 +1153,7 @@ def main():
 
     st = time.time()
     with Profile() as profile:
-        manual = "6519906"
+        manual = "6440079"
         """Example usage of the PieceMatcher class."""
         processed_manual_dir = Path(f"data/processed manuals/{manual}")
         step_pieces_dir = processed_manual_dir / "step pieces"
@@ -1041,7 +1176,10 @@ def main():
                 .sort_stats(SortKey.CUMULATIVE)
             )
             stats.print_stats()
-
+        # Generate a DataFrame with all set piece matches for the given step piece
+        args = {"page_num": 179, "step_num": 228, "piece_num": 2}
+        gpu_step_piece = matcher.get_gpu_step_piece(**args)
+        df = matcher.display_set_piece_matches(gpu_step_piece)
     et = time.time()
     elapsed_time = et - st
     print("Execution time:", elapsed_time, "seconds")
