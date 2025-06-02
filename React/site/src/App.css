@@ -1,22 +1,39 @@
-/* src/App.css */
-.scrollable-table {
-  max-height: 300px; /* Set a maximum height for the scrollable area */
-  overflow-y: auto; /* Enable vertical scrolling */
-  border: 1px solid #ccc; /* Add a border around the table */
-  margin-bottom: 20px; /* Add some space below the table */
+/* Ensure the main container uses flex layout for sticky footer */
+.container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
 }
 
-table {
-  width: 100%; /* Make the table take the full width */
-  border-collapse: collapse; /* Collapse borders */
+/* Make main content sections grow to fill available space */
+section {
+  flex: 1;
 }
 
-th, td {
-  border: 1px solid #ddd; /* Add borders to table cells */
-  padding: 8px; /* Add padding to table cells */
-  text-align: left; /* Align text to the left */
+/* Footer styling */
+footer {
+  background-color: #f3f4f6; /* Tailwind's bg-gray-100 */
+  text-align: center;
+  padding: 1rem 0;
+  margin-top: auto;
 }
 
-th {
-  background-color: #f2f2f2; /* Light gray background for header */
+/* Optional: Style links in the footer */
+footer a {
+  color: #3b82f6; /* Tailwind's text-blue-500 */
+  text-decoration: underline;
+  margin-right: 1rem;
+}
+
+footer a:last-child {
+  margin-right: 0;
+}
+
+/* Responsive image header */
+header img, .header-img, .container img[alt="BrickMapper"] {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: auto;
+  height: auto;
 }

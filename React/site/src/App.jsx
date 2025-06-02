@@ -325,7 +325,7 @@ const App = () => {
   console.log('Grouped Results:', groupedResults); // Debugging: Log grouped results
 
   return (
-    <div className="container mx-auto p-6">
+    <div className="container mx-auto p-6 flex flex-col min-h-screen">
       {/* Header Image */}
       <div className="text-center mb-6">
         <img 
@@ -446,60 +446,62 @@ const App = () => {
                   Multiple color variants found for "{selectedBrickognizePart?.name}" (Part {selectedBrickognizePart?.id}). 
                   Select a color variant to search for:
                 </h3>
-                <div className="scrollable-table">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Element ID</th>
-                        <th>Color</th>
-                        <th>Image</th>
-                        <th>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {elementVariants.map((element, index) => (
-                        <tr 
-                          key={index} 
-                          className={`hover:bg-gray-50 ${selectedElementId === element.element_id ? 'bg-blue-50 border-blue-300' : ''}`}
-                        >
-                          <td className="font-mono text-sm">
-                            {element.element_id}
-                          </td>
-                          <td>
-                            <span className="inline-block px-2 py-1 bg-gray-200 rounded text-sm">
-                              {element.color_name || 'Unknown Color'}
-                            </span>
-                          </td>
-                          <td>
-                            {element.img_url ? (
-                              <img
-                                src={element.img_url}
-                                alt={element.part_name}
-                                className="w-12 h-12 object-contain"
-                                onError={(e) => {
-                                  e.target.style.display = 'none';
-                                }}
-                              />
-                            ) : (
-                              <span className="text-gray-400 text-xs">No image</span>
-                            )}
-                          </td>
-                          <td>
-                            <button
-                              onClick={() => selectElementVariant(element)}
-                              className={`px-3 py-1 rounded text-sm transition-colors ${
-                                selectedElementId === element.element_id 
-                                  ? 'bg-blue-500 text-white hover:bg-blue-600' 
-                                  : 'bg-green-500 text-white hover:bg-green-600'
-                              }`}
-                            >
-                              {selectedElementId === element.element_id ? 'Selected' : 'Select'}
-                            </button>
-                          </td>
+                <div className="overflow-x-auto">
+                  <div className="max-h-128 max-w-xl overflow-y-auto">
+                    <table className="table-auto border-collapse min-w-max w-full">
+                      <thead className="sticky top-0 bg-gray-100 z-10">
+                        <tr>
+                          <th className="px-4 py-2">Element ID</th>
+                          <th className="px-4 py-2">Color</th>
+                          <th className="px-4 py-2">Image</th>
+                          <th className="px-4 py-2">Action</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {elementVariants.map((element, index) => (
+                          <tr
+                            key={index}
+                            className={`hover:bg-gray-50 ${selectedElementId === element.element_id ? 'bg-blue-50 border-blue-300' : ''}`}
+                          >
+                            <td className="font-mono text-sm whitespace-nowrap px-4 py-2">
+                              {element.element_id}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-2">
+                              <span className="inline-block px-2 py-1 bg-gray-200 rounded text-sm">
+                                {element.color_name || 'Unknown Color'}
+                              </span>
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-2">
+                              {element.img_url ? (
+                                <img
+                                  src={element.img_url}
+                                  alt={element.part_name}
+                                  className="w-12 h-12 object-contain"
+                                  onError={(e) => {
+                                    e.target.style.display = 'none';
+                                  }}
+                                />
+                              ) : (
+                                <span className="text-gray-400 text-xs">No image</span>
+                              )}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-2">
+                              <button
+                                onClick={() => selectElementVariant(element)}
+                                className={`px-3 py-1 rounded text-sm transition-colors ${
+                                  selectedElementId === element.element_id
+                                    ? 'bg-blue-500 text-white hover:bg-blue-600'
+                                    : 'bg-green-500 text-white hover:bg-green-600'
+                                }`}
+                              >
+                                {selectedElementId === element.element_id ? 'Selected' : 'Select'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
                 <div className="mt-3 flex justify-end">
                   <button
@@ -546,72 +548,88 @@ const App = () => {
       </section>
 
       {/* Search Results */}
-      <section className="mb-8">
-        <h2 className="text-2xl font-semibold mb-4">Search Results</h2>
-        {Object.keys(groupedResults).map((setNumber) => {
-          const records = groupedResults[setNumber];
-          const { set_num, set_name, set_year, set_img_url } = records[0];
-          // Extract the set_num (before the "-")
-          const extractedSetNum = set_num.split('-')[0];
-          return (
-            <div key={setNumber} className="p-4 border border-gray-300 rounded mb-4">
-              <h3 className="text-xl font-semibold mb-2">
-                Set Number: {extractedSetNum}{' '}
-                <a
-                  href={`${BUILDING_INSTRUCTIONS_URL}/${extractedSetNum}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-500 underline"
-                >
-                  (Building instructions)
-                </a>
-              </h3>
-              <p>
-                <strong>Name:</strong> {set_name}
-              </p>
-              <p>
-                <strong>Year:</strong> {set_year}
-              </p>
-              <img src={set_img_url} alt={set_name} className="w-64 mt-2" />
-              <h4 className="text-lg font-semibold mt-4">Steps:</h4>
-              {/* Container with fixed width but still scrollable */}
-              <div className="max-w-md overflow-auto max-h-48 border border-gray-300 rounded">
-                <table className="table-auto w-full border-collapse">
-                  <thead>
-                    <tr className="bg-gray-100">
-                      <th className="border border-gray-300 px-4 py-2">Booklet</th>
-                      <th className="border border-gray-300 px-4 py-2">Page</th>
-                      <th className="border border-gray-300 px-4 py-2">Step</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {records.map((record, index) => (
-                      <tr key={index} className="hover:bg-gray-50">
-                        <td className="border border-gray-300 px-4 py-2 text-center">{record.booklet_number}</td>
-                        <td className="border border-gray-300 px-4 py-2 text-center">
-                          {record.manual_id ? (
-                            <a
-                              href={`${BUILDING_INSTRUCTIONS_PDFS_URL}/${record.manual_id}.pdf#page=${record.page_number}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-500 underline"
-                            >
-                              {record.page_number}
-                            </a>
-                          ) : (
-                            record.page_number
-                          )}
-                        </td>
-                        <td className="border border-gray-300 px-4 py-2 text-center">{record.step_number}</td>
+      {Object.keys(groupedResults).length > 0 && (
+        <section className="mb-8">
+          <h2 className="text-2xl font-semibold mb-4">Search Results</h2>
+          {Object.keys(groupedResults).map((setNumber) => {
+            const records = groupedResults[setNumber];
+            const { set_num, set_name, set_year, set_img_url } = records[0];
+            // Extract the set_num (before the "-")
+            const extractedSetNum = set_num.split('-')[0];
+            return (
+              <div key={setNumber} className="p-4 border border-gray-300 rounded mb-4">
+                <h3 className="text-xl font-semibold mb-2">
+                  Set Number: {extractedSetNum}{' '}
+                  <a
+                    href={`${BUILDING_INSTRUCTIONS_URL}/${extractedSetNum}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-500 underline"
+                  >
+                    (Building instructions)
+                  </a>
+                </h3>
+                <p>
+                  <strong>Name:</strong> {set_name}
+                </p>
+                <p>
+                  <strong>Year:</strong> {set_year}
+                </p>
+                <img src={set_img_url} alt={set_name} className="w-64 mt-2" />
+                <h4 className="text-lg font-semibold mt-4">Steps:</h4>
+                {/* Container with fixed width but still scrollable */}
+                <div className="max-w-md overflow-auto max-h-48 border border-gray-300 rounded">
+                  <table className="table-auto w-full border-collapse">
+                    <thead>
+                      <tr className="bg-gray-100">
+                        <th className="border border-gray-300 px-4 py-2">Booklet</th>
+                        <th className="border border-gray-300 px-4 py-2">Page</th>
+                        <th className="border border-gray-300 px-4 py-2">Step</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {records.map((record, index) => (
+                        <tr key={index} className="hover:bg-gray-50">
+                          <td className="border border-gray-300 px-4 py-2 text-center">{record.booklet_number}</td>
+                          <td className="border border-gray-300 px-4 py-2 text-center">
+                            {record.manual_id ? (
+                              <a
+                                href={`${BUILDING_INSTRUCTIONS_PDFS_URL}/${record.manual_id}.pdf#page=${record.page_number}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-500 underline"
+                              >
+                                {record.page_number}
+                              </a>
+                            ) : (
+                              record.page_number
+                            )}
+                          </td>
+                          <td className="border border-gray-300 px-4 py-2 text-center">{record.step_number}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </section>
+            );
+          })}
+        </section>
+      )}
+      {/* Footer */}
+      <footer className="text-center mt-8 py-4 bg-gray-100">
+        <p>
+          Copyright © {new Date().getFullYear()} Idan Dekel. All rights reserved.
+        </p>
+        <p>
+          <a href="/about" className="text-blue-500 hover:underline mr-4">
+            About
+          </a>
+          <a href="/terms" className="text-blue-500 hover:underline">
+            Terms of Service
+          </a>
+        </p>
+      </footer>
     </div>
   );
 };
