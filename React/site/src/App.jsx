@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import Papa from 'papaparse';
 import './App.css'; // Import the CSS file
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -12,7 +11,6 @@ const BUILDING_INSTRUCTIONS_PDFS_URL = "https://www.lego.com/cdn/product-assets/
 const BRICKOGNIZE_API_URL = "https://api.brickognize.com/predict/parts/";
 
 const App = () => {
-  const [csvFile, setCsvFile] = useState(null);
   const [elementId, setElementId] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [elementDetails, setElementDetails] = useState(null);
@@ -25,111 +23,6 @@ const App = () => {
   const [elementVariants, setElementVariants] = useState([]);
   const [selectedBrickognizePart, setSelectedBrickognizePart] = useState(null);
   const [selectedElementId, setSelectedElementId] = useState(null);
-
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  useEffect(() => {
-    // Check if Supabase client is properly initialized
-    console.log("Supabase URL:", supabaseUrl ? "Defined" : "Undefined");
-    console.log("Supabase Key:", supabaseKey ? "Defined (value hidden)" : "Undefined");
-    
-    if (!supabaseUrl || !supabaseKey) {
-      alert("Supabase configuration is missing. Please check your environment variables.");
-      return;
-    }
-    
-    // Log Supabase client to check if it's properly initialized
-    console.log("Supabase client initialized:", supabase ? "Yes" : "No");
-    
-    runDiagnostics();
-  }, []);
-
-  const checkSupabaseConfig = () => {
-    const configStatus = {
-      url: supabaseUrl ? "✓ Defined" : "✗ Missing",
-      key: supabaseKey ? "✓ Defined" : "✗ Missing",
-      client: supabase ? "✓ Initialized" : "✗ Failed"
-    };
-    
-    console.log("Supabase Configuration Status:", configStatus);
-    
-    alert(`
-Supabase Configuration Status:
-- URL: ${configStatus.url}
-- API Key: ${configStatus.key}
-- Client: ${configStatus.client}
-
-Check the console for more details.
-    `);
-  };
-
-  const runDiagnostics = async () => {
-    try {
-      console.log("Running simplified diagnostics...");
-      
-      // 1. Check database connection with a simple query
-      const { data: connectionTest, error: connectionError } = await supabase
-        .from('elements')
-        .select('*')
-        .limit(1);
-      
-      if (connectionError) {
-        console.error("Database connection issue:", connectionError);
-        alert(`Database connection issue: ${connectionError.message || 'Unknown error'}`);
-      } else {
-        console.log("Database connection successful, elements table response:", connectionTest);
-        
-        if (connectionTest.length === 0) {
-          console.log("Elements table exists but appears to be empty");
-        }
-      }
-      
-      // 2. Check each table individually with simple queries
-      const tables = ['steps', 'sets', 'manuals'];
-      
-      for (const table of tables) {
-        const { data, error } = await supabase
-          .from(table)
-          .select('*')
-          .limit(1);
-        
-        if (error) {
-          console.error(`Error accessing table '${table}':`, error);
-          alert(`Table '${table}' may not exist or is not accessible: ${error.message || 'Unknown error'}`);
-        } else {
-          console.log(`Table '${table}' exists:`, data);
-          
-          if (data.length === 0) {
-            console.log(`Table '${table}' appears to be empty`);
-          }
-        }
-      }
-      
-      alert('Diagnostics complete. Check the console for detailed information.');
-    } catch (error) {
-      console.error('Diagnostics error:', error);
-      alert(`Diagnostics error: ${error.message || 'Unknown error'}`);
-    }
-  };
-
-  const fetchData = async () => {
-    try {
-      const [stepsResponse, elementsResponse] = await Promise.all([
-        supabase.from('steps').select('*'),
-        supabase.from('elements').select('*'),
-      ]);
-
-      if (stepsResponse.error) throw stepsResponse.error;
-      if (elementsResponse.error) throw elementsResponse.error;
-
-    } catch (error) {
-      console.error('Error fetching data:', error.message);
-    }
-  };
-
-  const handleCsvUpload = (e) => setCsvFile(e.target.files[0]);
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
@@ -419,28 +312,6 @@ Check the console for more details.
     }
   };
 
-  const uploadCsvData = async (tableName) => {
-    if (!csvFile) {
-      alert('Please upload a CSV file first.');
-      return;
-    }
-
-    Papa.parse(csvFile, {
-      header: true,
-      complete: async ({ data }) => {
-        try {
-          const { error } = await supabase.from(tableName).insert(data);
-          if (error) throw error;
-          alert(`Data uploaded to ${tableName} successfully!`);
-          fetchData();
-        } catch (error) {
-          console.error(`Error uploading data to ${tableName}:`, error.message);
-        }
-      },
-      error: (error) => console.error('Error parsing CSV:', error.message),
-    });
-  };
-
   const groupBySetNumber = (results) =>
     results.reduce((acc, record) => {
       const { set_num: setNumber } = record;
@@ -455,7 +326,14 @@ Check the console for more details.
 
   return (
     <div className="container mx-auto p-6">
-      <h1 className="text-3xl font-bold mb-6 text-center">BrickMapper</h1>
+      {/* Header Image */}
+      <div className="text-center mb-6">
+        <img 
+          src="/header.png" 
+          alt="BrickMapper" 
+          className="mx-auto max-w-md max-h-32"
+        />
+      </div>
 
       {/* Search Section */}
       <section className="mb-8">
@@ -642,20 +520,6 @@ Check the console for more details.
             )}
           </div>
         )}
-
-        {/* Add this near your search section */}
-        <button
-          onClick={runDiagnostics}
-          className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600 ml-2"
-        >
-          Run Diagnostics
-        </button>
-        <button
-          onClick={checkSupabaseConfig}
-          className="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600 ml-2"
-        >
-          Check Supabase Config
-        </button>
         
         {elementDetails && (
           <div className="p-4 border border-gray-300 rounded mb-4">
@@ -747,43 +611,6 @@ Check the console for more details.
             </div>
           );
         })}
-      </section>
-
-      {/* CSV Upload */}
-      <section>
-        <h2 className="text-2xl font-semibold mb-4">Upload CSV</h2>
-        <div className="flex items-center gap-4 flex-wrap">
-          <input
-            type="file"
-            accept=".csv"
-            onChange={handleCsvUpload}
-            className="border border-gray-300 rounded px-4 py-2"
-          />
-          <button
-            onClick={() => uploadCsvData('steps')}
-            className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-          >
-            Upload to Steps
-          </button>
-          <button
-            onClick={() => uploadCsvData('elements')}
-            className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-          >
-            Upload to Elements
-          </button>
-          <button
-            onClick={() => uploadCsvData('sets')}
-            className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-          >
-            Upload to Sets
-          </button>
-          <button
-            onClick={() => uploadCsvData('manuals')}
-            className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-          >
-            Upload to Manuals
-          </button>
-        </div>
       </section>
     </div>
   );
