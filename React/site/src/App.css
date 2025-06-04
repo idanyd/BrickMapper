@@ -3,11 +3,16 @@
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  max-width: 1200px;
+  margin: 0 auto; /* This centers the container horizontally */
+  padding: 0 1rem;
 }
 
 /* Make main content sections grow to fill available space */
-section {
+main {
   flex: 1;
+  padding: 0 1rem;
+  margin: 0 auto;
 }
 
 /* Footer styling */
@@ -16,17 +21,7 @@ footer {
   text-align: center;
   padding: 1rem 0;
   margin-top: auto;
-}
-
-/* Optional: Style links in the footer */
-footer a {
-  color: #3b82f6; /* Tailwind's text-blue-500 */
-  text-decoration: underline;
-  margin-right: 1rem;
-}
-
-footer a:last-child {
-  margin-right: 0;
+  flex-shrink: 0;
 }
 
 /* Responsive image header */

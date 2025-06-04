@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import { createClient } from '@supabase/supabase-js';
 import './App.css'; // Import the CSS file
 
@@ -10,7 +11,111 @@ const BUILDING_INSTRUCTIONS_URL = "https://www.lego.com/en-gb/service/building-i
 const BUILDING_INSTRUCTIONS_PDFS_URL = "https://www.lego.com/cdn/product-assets/product.bi.core.pdf";
 const BRICKOGNIZE_API_URL = "https://api.brickognize.com/predict/parts/";
 
-const App = () => {
+// About Component
+const About = () => {
+  return (
+    <div className="p-6">
+      <div className="max-w-4xl p-6 bg-white rounded shadow">
+        <Link to="/">
+          <img
+            src="/logo.png"
+            alt="BrickMapper Logo"
+            className="mx-auto mb-6 w-32 h-32 object-contain cursor-pointer hover:opacity-80 transition-opacity"
+          />
+        </Link>
+        <h3 className="text-2xl font-bold mb-4 text-center">About BrickMapper</h3>
+        <p className="text-gray-700 text-lg">
+          BrickMapper is a web application that helps LEGO® enthusiasts identify and locate specific LEGO® pieces within instruction manuals.
+          <br />
+          To find which steps a LEGO® piece appears in across different instruction booklets, enter the element ID of the piece as it appears in the set's inventory pages.
+          <br />
+          You can also upload an image of a LEGO® piece, and BrickMapper will use the <a href="https://www.brickognize.com" className="text-blue-500 hover:underline" target="_blank" rel="noopener noreferrer">Brickognize</a> API to recognize the piece and provide you with its element ID.
+          <br />
+          The BrickMapper database was created using information extracted from official LEGO® instruction manuals and from the <a href="https://rebrickable.com/downloads/" className="text-blue-500 hover:underline" target="_blank" rel="noopener noreferrer">Rebrickable® database</a>. This data is used solely to help users identify and locate LEGO® elements within instruction manuals.
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// Terms Component (add this after the About component)
+const Terms = () => {
+  return (
+    <div className="p-6">
+      <div className="max-w-xl p-6 bg-white rounded shadow">
+        <Link to="/">
+          <img
+            src="/logo.png"
+            alt="BrickMapper Logo"
+            className="mx-auto mb-6 w-32 h-32 object-contain cursor-pointer hover:opacity-80 transition-opacity"
+          />
+        </Link>
+        <h3 className="text-3xl font-bold mb-6 text-center">Terms of Use</h3>
+        
+        <div className="space-y-6 text-gray-700">
+          <div>
+            <h4 className="text-xl font-semibold mb-2 text-gray-800">1. Acceptance of Terms</h4>
+            <p>By accessing and using BrickMapper, you agree to be bound by these Terms of Use. If you do not agree to these terms, please do not use the website.</p>
+          </div>
+
+          <div>
+            <h4 className="text-xl font-semibold mb-2 text-gray-800">2. Use of the Website</h4>
+            <p>BrickMapper is intended for personal, non-commercial use. You may use the website to identify and locate LEGO® pieces within instruction manuals.</p>
+          </div>
+
+          <div>
+            <h4 className="text-xl font-semibold mb-2 text-gray-800">3. Intellectual Property</h4>
+            <p>The content and materials on BrickMapper, including but not limited to text, graphics, logos, and software, are owned by BrickMapper or its licensors and are protected by copyright and other intellectual property laws. You may not reproduce, distribute, or create derivative works from any content on this website without prior written permission.</p>
+          </div>
+
+          <div>
+            <h4 className="text-xl font-semibold mb-2 text-gray-800">4. Disclaimer of Warranty</h4>
+            <p>BrickMapper is provided "as is" without any warranties, express or implied. We do not warrant that the website will be error-free or uninterrupted, or that the information provided will be accurate or complete.</p>
+          </div>
+
+          <div>
+            <h4 className="text-xl font-semibold mb-2 text-gray-800">5. Limitation of Liability</h4>
+            <p>In no event shall BrickMapper be liable for any direct, indirect, incidental, special, or consequential damages arising out of or in any way connected with your use of the website.</p>
+          </div>
+
+          <div>
+            <h4 className="text-xl font-semibold mb-2 text-gray-800">6. Links to Third-Party Websites</h4>
+            <p>BrickMapper may contain links to third-party websites. We are not responsible for the content or privacy practices of these websites.</p>
+          </div>
+
+          <div>
+            <h4 className="text-xl font-semibold mb-2 text-gray-800">7. Modifications to Terms</h4>
+            <p>We reserve the right to modify these Terms of Use at any time. Your continued use of BrickMapper after any such changes constitutes your acceptance of the new terms.</p>
+          </div>
+
+          <div>
+            <h4 className="text-xl font-semibold mb-2 text-gray-800">8. Governing Law</h4>
+            <p>These Terms of Use shall be governed by and construed in accordance with the laws of The United Kingdom, without regard to its conflict of law principles.</p>
+          </div>
+
+          <div>
+            <h4 className="text-xl font-semibold mb-2 text-gray-800">9. Privacy</h4>
+            <p>BrickMapper does not gather any information about the users or their behaviour when using the site.</p>
+            <p>However, images uploaded by the user are sent to Brickognize to be analyzed, and by using that option you're agreeing to Brickognize's <a href="https://brickognize.com/terms-of-service" className="text-blue-500 hover:underline" target="_blank" rel="noopener noreferrer">Terms of Service</a>.</p>
+          </div>
+
+          <div>
+            <h4 className="text-xl font-semibold mb-2 text-gray-800">10. Contact Information</h4>
+            <p>BrickMapper is an independent project and is not affiliated with, endorsed by, or associated with the LEGO® Group, Brickognize, or Rebrickable® in any way.</p>
+          </div>
+
+          <div>
+            <h4 className="text-xl font-semibold mb-2 text-gray-800">11. Contact Information</h4>
+            <p>If you have any questions about these Terms of Use, please contact us at <a href="mailto:idanyd@gmail.com" className="text-blue-500 hover:underline">support@example.com</a>.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Main Home Component
+const Home = () => {
   const [elementId, setElementId] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [elementDetails, setElementDetails] = useState(null);
@@ -325,20 +430,18 @@ const App = () => {
   console.log('Grouped Results:', groupedResults); // Debugging: Log grouped results
 
   return (
-    <div className="container mx-auto p-6 flex flex-col min-h-screen">
+    <div className="p-6">
       {/* Header Image */}
       <div className="text-center mb-6">
         <img 
           src="/header.png" 
           alt="BrickMapper" 
-          className="mx-auto max-w-md max-h-32"
+          className="max-w-md max-h-32"
         />
       </div>
 
       {/* Search Section */}
       <section className="mb-8">
-        <h2 className="text-2xl font-semibold mb-4">Search Steps by Element</h2>
-        
         {/* Search Mode Toggle */}
         <div className="mb-4">
           <div className="flex gap-4">
@@ -616,21 +719,43 @@ const App = () => {
           })}
         </section>
       )}
-      {/* Footer */}
-      <footer className="text-center mt-8 py-4 bg-gray-100">
-        <p>
-          Copyright © {new Date().getFullYear()} Idan Dekel. All rights reserved.
-        </p>
-        <p>
-          <a href="/about" className="text-blue-500 hover:underline mr-4">
-            About
-          </a>
-          <a href="/terms" className="text-blue-500 hover:underline">
-            Terms of Service
-          </a>
-        </p>
-      </footer>
     </div>
+  );
+};
+
+// Main App Component with Router
+const App = () => {
+  return (
+    <Router>
+      <div className="container">
+        {/* Main content area */}
+        <main>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/about" element={<About />} />
+            <Route path="/terms" element={<Terms />} />
+          </Routes>
+        </main>
+
+        {/* Footer */}
+        <footer className="text-center mt-8 py-4 bg-gray-100">
+          <p>
+            Copyright © {new Date().getFullYear()} Idan Dekel. All rights reserved.
+          </p>
+          <p>
+            <Link to="/" className="text-blue-500 hover:underline mr-4">
+              Home
+            </Link>
+            <Link to="/about" className="text-blue-500 hover:underline mr-4">
+              About
+            </Link>
+            <Link to="/terms" className="text-blue-500 hover:underline">
+              Terms of Service
+            </Link>
+          </p>
+        </footer>
+      </div>
+    </Router>
   );
 };
 
