@@ -1,5 +1,7 @@
 # Image Annotation Tool
 
+## This is only here for legacy purposes. The tool is no longer supported nor is it used in the BrickMapper project in any way.
+
 A React-based web application for annotating images with bounding boxes. This tool allows users to load multiple images and create labeled annotations, perfect for creating training data for machine learning models or marking specific regions in images.
 
 ## Features
