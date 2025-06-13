@@ -1,7 +1,7 @@
 
 # BrickMapper
 
-BrickMapper is a comprehensive machine learning project that helps LEGO^®^ enthusiasts identify and locate where  LEGO^®^ pieces are used within instruction manuals. The project combines computer vision, deep learning, and web technologies to create an intelligent system for LEGO^®^ piece recognition and step tracking.
+BrickMapper is a comprehensive machine learning project that helps LEGO® enthusiasts identify and locate where  LEGO® pieces are used within instruction manuals. The project combines computer vision, deep learning, and web technologies to create an intelligent system for LEGO® piece recognition and step tracking.
 
 ## 🎯 Project Overview
 
@@ -58,7 +58,7 @@ BrickMapper is a comprehensive machine learning project that helps LEGO^®^ enth
 
 The application uses the following database structure:
 
-### Core Tables (Created by Rebrickable^®^)
+### Core Tables (Created by Rebrickable®)
 - **elements**: LEGO element information (ID, part number, name, color, image URL)
 - **sets**: LEGO set information (set number, name, year, image URL)
 - **inventories**: Set inventory data linking sets to their elements
@@ -272,8 +272,8 @@ This project is licensed under the terms of the  [GPL V3.0 license](https://gith
 
 ## 🙏 Acknowledgments
 
-- LEGO^®^ Group for providing instruction manuals and piece data
-- Rebrickable^®^ for creating and maintaining the [LEGO^®^ catalog database](https://rebrickable.com/downloads/)
+- LEGO® Group for providing instruction manuals and piece data
+- Rebrickable® for creating and maintaining the [LEGO® catalog database](https://rebrickable.com/downloads/)
 - [Brickognize](https://brickognize.com/) for providing the LEGO pieces image recognition API
 - Ultralytics for the YOLO framework
 - OpenCV community for computer vision tools
@@ -287,4 +287,4 @@ For questions, issues, or contributions, please:
 
 ---
 
-**Note**: This project is for educational and research purposes. LEGO^®^ is a trademark of the LEGO Group.
+**Note**: This project is for educational and research purposes. LEGO® is a trademark of the LEGO Group.
